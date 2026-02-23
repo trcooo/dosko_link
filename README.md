@@ -116,3 +116,10 @@ Backend автоматически подхватит `DATABASE_URL` (Railway Po
 - Открой frontend домен → регистрация/логин
 - Создай репетитора, опубликуй профиль, создай слоты
 - Под учеником забронируй слот → зайди в комнату → проверь **видео + чат + доску**
+
+
+## Single-service Railway deploy (Docker)
+
+This repo includes a root-level Dockerfile that builds the frontend and serves it from FastAPI.
+
+On Railway, deploy the repo root as one service. Set `DL_JWT_SECRET` and (optionally) attach PostgreSQL so `DATABASE_URL` is provided.

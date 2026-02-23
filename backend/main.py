@@ -7,13 +7,15 @@ import os
 import smtplib
 import ssl
 import urllib.request
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
@@ -1786,3 +1788,27 @@ async def ws_room(ws: WebSocket, channel: str, room_id: str):
                 await ws.close(code=1011)
             except Exception:
                 pass
+
+# -----------------
+# Serve Frontend (built with Vite) when ./static exists (single-service deploy)
+# -----------------
+DL_STATIC_DIR = Path(__file__).parent / "static"
+if DL_STATIC_DIR.exists():
+    # Serve static assets (e.g., /assets/...)
+    if (DL_STATIC_DIR / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=str(DL_STATIC_DIR / "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def _spa_root():
+        return FileResponse(str(DL_STATIC_DIR / "index.html"))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def _spa_any(full_path: str):
+        # Do not hijack API / WS paths
+        if full_path.startswith("api") or full_path.startswith("ws"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = DL_STATIC_DIR / full_path
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(DL_STATIC_DIR / "index.html"))
+
