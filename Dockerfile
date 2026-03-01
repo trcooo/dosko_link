@@ -1,22 +1,30 @@
 # Railway single-service deploy: builds frontend and serves it from FastAPI
 #
-# One service, one domain, zero CORS pain:
+# One service, one domain:
 # - Stage 1 builds the Vite frontend
 # - Stage 2 runs FastAPI and serves the built SPA from /static
+#
+# This Dockerfile is hardened for Railway builds where npm may default to
+# production installs (omitting devDependencies). Vite is required at build time.
 
 # Stage 1: build frontend
-FROM node:20-alpine AS frontend-build
+FROM node:20-bookworm-slim AS frontend-build
 WORKDIR /app/frontend
 
-COPY frontend/package*.json ./
+# Use a stable npm version and force devDependencies to be installed
+RUN npm i -g npm@10.9.2
+ENV NODE_ENV=development \
+    NPM_CONFIG_PRODUCTION=false \
+    NPM_CONFIG_OMIT=
 
-# Railway / some builders may force "production" installs.
-# We must explicitly include dev deps because Vite is in devDependencies.
-ENV NODE_ENV=development
-ENV NPM_CONFIG_PRODUCTION=false
-RUN npm ci --include=dev --omit=optional --no-audit --no-fund --production=false
+# Copy lockfile explicitly (npm ci requires it)
+COPY frontend/package.json frontend/package-lock.json ./
 
-COPY frontend/ .
+# Install deps (dev deps included) and avoid optional deps to reduce flakiness
+RUN npm ci --no-audit --no-fund --omit=optional
+
+# Build
+COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: backend runtime
