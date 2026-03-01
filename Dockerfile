@@ -1,11 +1,21 @@
 # Railway single-service deploy: builds frontend and serves it from FastAPI
+#
+# One service, one domain, zero CORS pain:
+# - Stage 1 builds the Vite frontend
+# - Stage 2 runs FastAPI and serves the built SPA from /static
+
 # Stage 1: build frontend
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
+
 COPY frontend/package*.json ./
-ENV NPM_CONFIG_PRODUCTION=false
+
+# Railway / some builders may force "production" installs.
+# We must explicitly include dev deps because Vite is in devDependencies.
 ENV NODE_ENV=development
-RUN npm ci
+ENV NPM_CONFIG_PRODUCTION=false
+RUN npm ci --include=dev --no-audit --no-fund
+
 COPY frontend/ .
 RUN npm run build
 

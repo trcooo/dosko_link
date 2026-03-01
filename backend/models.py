@@ -11,6 +11,9 @@ class User(SQLModel, table=True):
     email: str = Field(index=True, unique=True)
     password_hash: str
     role: str = Field(default="student", index=True)  # student | tutor | admin
+    is_active: bool = Field(default=True, index=True)
+    token_version: int = Field(default=0)
+    last_login_at: Optional[datetime] = Field(default=None)
     # Notifications (MVP)
     telegram_chat_id: Optional[str] = Field(default=None)
     notify_email: bool = Field(default=True)

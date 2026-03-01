@@ -1,125 +1,150 @@
-# DL MVP (без оплаты)
+# DL MVP (без оплаты) — единый деплой на Railway (1 сервис)
 
-Это стартовый каркас MVP платформы для репетиторов:
-- маркетплейс профилей репетиторов
+Этот репозиторий — MVP платформы для репетиторов:
+- маркетплейс репетиторов + профили
 - слоты и бронирование
 - комната занятия: WebRTC созвон + чат + доска в реальном времени
-- отзывы после занятия (UI + API)
+- отзывы после занятия
+- домашка + прогресс по темам + мини‑тест перед уроком
+- уведомления (email/telegram) и напоминания (cron endpoint)
 
-## 1) Запуск backend (FastAPI)
-
-```bash
-cd backend
-python -m venv .venv
-# Windows: .venv\\Scripts\\activate
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# (опционально) переменные окружения
-cp .env.example .env
-# Linux/macOS
-export $(cat .env | xargs)
-
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Проверка: http://localhost:8000/health
-
-## 2) Запуск frontend (Vite + React)
-
-```bash
-cd frontend
-npm i
-cp .env.example .env
-npm run dev
-```
-
-Открыть: http://localhost:5173
-
-## 3) Быстрый сценарий теста
-
-1) Зарегистрируй **репетитора** → зайди в Кабинет → заполни профиль → **Опубликовать** → создай 2–3 слота.
-2) Зарегистрируй **ученика** (в другом браузере/инкогнито) → Найти репетитора → открыть профиль → **Забронировать** слот.
-3) Откроется комната: протестируй **созвон + доску + чат**.
-
-## 4) Что сделано и что дальше
-
-### Уже в коде
-- JWT авторизация
-- TutorProfile CRUD + publish
-- Slot create/list + booking
-- Комната занятия: WebRTC + чат + доска
-- Ограничение доступа к комнате только участникам booking
-- Завершение/отмена занятия
-- Отзывы после завершения (UI + API)
-
-### Следующий логичный шаг (рекомендую)
-- Улучшение сигналинга (glare handling, reconnect)
-- Экспорт доски (PNG/PDF) ✅
-- Уведомления (email/telegram) ✅
-- Расписание: показывать booked слоты репетитору ✅
-- Перенос занятия на другой слот ✅
-
-### Новое в v1.1
-- Экспорт доски в **PNG + PDF** и сохранение в «Материалы занятия»
-- Настройки уведомлений в кабинете (email/telegram)
-- Endpoint для напоминаний `/api/cron/reminders?key=...` (под Railway Cron)
-- Репетитор видит **все слоты** (open + booked)
-- Перенос занятия на другой открытый слот
-
-## 5) Структура
-
-- `backend/` — FastAPI + SQLModel (SQLite)
-- `frontend/` — Vite React (оранжево-белая тема)
+**Важно для MVP:** деплой сделан так, чтобы **не париться** — один сервис на Railway, один домен:
+- Dockerfile в корне собирает **frontend** и кладёт `dist/` в `backend/static`
+- FastAPI в рантайме отдаёт SPA и обслуживает `/api/*` + `/ws/*`
 
 ---
 
-# Деплой на Railway (2 сервиса: backend + frontend)
+## Локальный запуск
 
-Railway ожидает, что приложение слушает `0.0.0.0:$PORT`.
+### Backend
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 
-## A) Backend service
+# секрет для JWT (локально можно так)
+export DL_JWT_SECRET="dev-secret"
 
-1) Создай новый сервис из репозитория.
-2) В настройках сервиса:
-   - **Root Directory**: `/backend` (изолированный монорепо)
-   - **Config as code path**: `/backend/railway.toml` (опционально, но удобно)
-3) Добавь PostgreSQL (плагин/базу) в проект Railway.
-4) Переменные окружения (Variables) для backend:
-   - `DL_JWT_SECRET` = случайная длинная строка
-   - `DL_CORS_ORIGINS` = `https://<твой-frontend-домен>`
-   - (опционально) `DL_DB_URL` — если хочешь переопределить `DATABASE_URL`
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+Проверка: http://localhost:8000/health
 
-### Уведомления и напоминания (опционально)
-- Email (SMTP): `DL_SMTP_HOST`, `DL_SMTP_PORT`, `DL_SMTP_USER`, `DL_SMTP_PASS`, `DL_SMTP_FROM`
-- Telegram: `DL_TELEGRAM_BOT_TOKEN` + включить Telegram в кабинете и указать `chat_id`
-- Напоминания: установи `DL_CRON_KEY` и создай Railway Cron, который вызывает:
-  `POST https://<backend-domain>/api/cron/reminders?key=<DL_CRON_KEY>`
+### Frontend
+```bash
+cd frontend
+npm i
+npm run dev
+```
+Открыть: http://localhost:5173
 
-Рекомендуемая частота Cron: раз в 5 минут.
+---
 
-Backend автоматически подхватит `DATABASE_URL` (Railway Postgres) и создаст таблицы на старте.
+## Качественная авторизация (что сделано)
 
-## B) Frontend service
+- Пароли хешируются `bcrypt`.
+- Access token (JWT) **короткоживущий** (по умолчанию 15 минут).
+- Refresh token (JWT) хранится в **HttpOnly cookie** и **ротируется** при обновлении.
+- Server‑side logout: у пользователя есть `token_version`. При logout/смене пароля `token_version` увеличивается и **все старые токены становятся недействительными**.
+- Роль пользователя: `student | tutor | admin`.
 
-1) Создай второй сервис из того же репозитория.
-2) В настройках сервиса:
-   - **Root Directory**: `/frontend`
-   - **Config as code path**: `/frontend/railway.toml`
-3) Переменные окружения (Variables) для frontend:
-   - `VITE_API_BASE` = `https://<твой-backend-домен>`
+### Админ‑режим
+- Включается ролями + endpoint’ами `/api/admin/*`.
+- Есть веб‑страница `/admin` (доступ только `admin`).
 
-Важно: у Vite переменные `VITE_...` подставляются **на этапе сборки**, поэтому `VITE_API_BASE` должен быть задан в Railway до деплоя.
+### Bootstrap admin (чтобы не застрять на деплое)
+Если задать переменные:
+- `DL_BOOTSTRAP_ADMIN_EMAIL`
+- `DL_BOOTSTRAP_ADMIN_PASSWORD`
 
-## C) Проверка
+то при старте приложения админ будет создан (или будет поднята роль до admin).
 
-- Открой frontend домен → регистрация/логин
-- Создай репетитора, опубликуй профиль, создай слоты
-- Под учеником забронируй слот → зайди в комнату → проверь **видео + чат + доску**
+---
 
+# ✅ Деплой на Railway одним сервисом (самый простой путь)
 
-## Single-service Railway deploy (Docker)
+## 1) Подготовь GitHub
+1) Убедись, что **в корне репозитория** лежит `Dockerfile` (в этом проекте он уже есть).
+2) Закоммить и запушь всё в GitHub.
 
-This repo includes a root-level Dockerfile that builds the frontend and serves it from FastAPI.
+## 2) Создай проект в Railway
+1) Railway → **New Project** → **Deploy from GitHub Repo** → выбери репозиторий.
+2) Railway должен увидеть Dockerfile.
+   - Если Railway всё равно пытается билдить через Nixpacks/Railpack и пишет "start.sh not found" —
+     зайди в сервис → **Settings** → **Build** и выбери **Builder: Dockerfile**.
 
-On Railway, deploy the repo root as one service. Set `DL_JWT_SECRET` and (optionally) attach PostgreSQL so `DATABASE_URL` is provided.
+## 3) Переменные окружения (Variables) — обязательные
+В сервисе Railway → **Variables**:
+- `DL_JWT_SECRET` = длинная случайная строка (обязательно)
+
+Рекомендуется для прод‑cookie:
+- `DL_COOKIE_SECURE=true`
+
+Чтобы сразу иметь админа:
+- `DL_BOOTSTRAP_ADMIN_EMAIL=you@example.com`
+- `DL_BOOTSTRAP_ADMIN_PASSWORD=AdminPass123`  (8+ символов, буквы+цифры)
+
+## 4) База данных (рекомендуется)
+Для MVP можно жить на SQLite внутри контейнера, но на Railway лучше Postgres:
+1) В Railway проекте нажми **Add Service** → **Database** → **PostgreSQL**.
+2) Railway создаст `DATABASE_URL` автоматически.
+3) Backend сам подхватит `DATABASE_URL`.
+
+## 5) Домен
+1) Сервис → **Networking / Domains** → **Generate Domain**.
+2) Проверь:
+- `https://<domain>/health`
+- `https://<domain>/` (должен открыться фронт)
+
+## 6) Проверка сценария
+1) Зарегистрируй репетитора → Кабинет → заполни профиль → Опубликовать → создай слоты.
+2) Зарегистрируй ученика → забронируй слот.
+3) Открой комнату: видео/чат/доска.
+4) Заверши занятие → оставь отзыв.
+
+---
+
+## Опционально: уведомления и напоминания
+
+### Email (SMTP)
+Variables:
+- `DL_SMTP_HOST`
+- `DL_SMTP_PORT` (обычно 587)
+- `DL_SMTP_USER`
+- `DL_SMTP_PASS`
+- `DL_SMTP_FROM` (опционально)
+
+### Telegram
+Variables:
+- `DL_TELEGRAM_BOT_TOKEN`
+
+Пользователь включает Telegram и вводит `chat_id` в Кабинете.
+
+### Напоминания за ~10 минут
+Есть endpoint:
+- `POST /api/cron/reminders?key=<DL_CRON_KEY>`
+
+Variables:
+- `DL_CRON_KEY=любая_секретная_строка`
+
+Как запускать по расписанию (MVP‑варианты):
+1) **GitHub Actions** по cron (самый простой).
+2) Отдельный маленький worker‑service на Railway.
+
+---
+
+## Переменные окружения (сводка)
+
+**Обязательные:**
+- `DL_JWT_SECRET`
+
+**Рекомендуемые:**
+- `DL_COOKIE_SECURE=true`
+- `DL_BOOTSTRAP_ADMIN_EMAIL`
+- `DL_BOOTSTRAP_ADMIN_PASSWORD`
+
+**Опционально:**
+- `DATABASE_URL` (автоматически от Railway Postgres)
+- `DL_CORS_ORIGINS` (если выносишь фронт отдельно)
+- SMTP/Telegram/Cron variables
+

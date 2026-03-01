@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link, Route, Routes, useNavigate } from 'react-router-dom'
-import { AuthProvider, useAuth } from './auth'
+import { AuthProvider, useAuth } from './auth.jsx'
 
 import Home from './pages/Home'
 import Login from './pages/Login'
@@ -9,6 +9,7 @@ import TutorProfile from './pages/TutorProfile'
 import Dashboard from './pages/Dashboard'
 import Room from './pages/Room'
 import Learning from './pages/Learning'
+import Admin from './pages/Admin'
 
 function NavBar() {
   const { me, logout } = useAuth()
@@ -29,6 +30,7 @@ function NavBar() {
           <Link className="btn btnGhost" to="/">Поиск</Link>
           {me && <Link className="btn btnGhost" to="/dashboard">Кабинет</Link>}
           {me && <Link className="btn btnGhost" to="/learning">Учёба</Link>}
+          {me && me.role === 'admin' && <Link className="btn btnGhost" to="/admin">Админ</Link>}
           {!me ? (
             <>
               <Link className="btn" to="/login">Войти</Link>
@@ -59,6 +61,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/learning" element={<Learning />} />
           <Route path="/room/:roomId" element={<Room />} />
+          <Route path="/admin" element={<Admin />} />
         </Routes>
       </div>
     </AuthProvider>

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useAuth } from '../auth'
+import { useAuth } from '../auth.jsx'
 import { apiFetch, apiUrl, apiUpload } from '../api'
 
 import VideoCall from '../components/VideoCall'

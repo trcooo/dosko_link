@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useAuth } from '../auth'
-import { apiFetch } from '../api'
+import { useAuth } from '../auth.jsx'
+import { apiFetch, changePassword } from '../api'
 import ReviewModal from '../components/ReviewModal'
 import RescheduleModal from '../components/RescheduleModal'
 
@@ -12,7 +12,7 @@ function toLocalInputValue(d) {
 }
 
 export default function Dashboard() {
-  const { me, token, loading: authLoading } = useAuth()
+  const { me, token, loading: authLoading, logout } = useAuth()
   const nav = useNavigate()
 
   const [profile, setProfile] = useState(null)
@@ -22,6 +22,11 @@ export default function Dashboard() {
   const [saving, setSaving] = useState(false)
 
   const [settings, setSettings] = useState(null)
+
+  const [oldPw, setOldPw] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [newPw2, setNewPw2] = useState('')
+  const [pwMsg, setPwMsg] = useState('')
 
   const [slotStart, setSlotStart] = useState(() => toLocalInputValue(Date.now() + 3600_000))
   const [slotEnd, setSlotEnd] = useState(() => toLocalInputValue(Date.now() + 5400_000))
@@ -182,6 +187,25 @@ export default function Dashboard() {
     }
   }
 
+  async function doChangePassword() {
+    setErr('')
+    setPwMsg('')
+    if (!oldPw || !newPw) { setErr('Заполни текущий и новый пароль'); return }
+    if (newPw !== newPw2) { setErr('Новые пароли не совпадают'); return }
+    setSaving(true)
+    try {
+      await changePassword(token, oldPw, newPw)
+      setPwMsg('Пароль изменён. Войди заново.')
+      setOldPw(''); setNewPw(''); setNewPw2('')
+      await logout()
+      nav('/login')
+    } catch (e) {
+      setErr(e.message || 'Не удалось сменить пароль')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (!me) return null
 
   return (
@@ -299,6 +323,22 @@ export default function Dashboard() {
           <div className="footerNote">Для напоминаний за ~10 минут можно настроить Railway Cron на вызов /api/cron/reminders?key=DL_CRON_KEY.</div>
         </div>
       )}
+
+
+      <div className="card">
+        <div style={{ fontWeight: 900, fontSize: 18 }}>Безопасность</div>
+        <div className="sub">Смена пароля завершит все активные сессии.</div>
+        {pwMsg && <div className="footerNote">{pwMsg}</div>}
+        <div className="label">Текущий пароль</div>
+        <input className="input" type="password" value={oldPw} onChange={(e) => setOldPw(e.target.value)} />
+        <div className="label">Новый пароль (8+ символов, буквы и цифры)</div>
+        <input className="input" type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+        <div className="label">Повтори новый пароль</div>
+        <input className="input" type="password" value={newPw2} onChange={(e) => setNewPw2(e.target.value)} />
+        <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+          <button className="btn btnPrimary" onClick={doChangePassword} disabled={saving}>{saving ? 'Сохраняем…' : 'Сменить пароль'}</button>
+        </div>
+      </div>
 
       {me.role !== 'tutor' && (
         <div className="card">

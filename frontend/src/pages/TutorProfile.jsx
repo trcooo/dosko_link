@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { apiFetch } from '../api'
-import { useAuth } from '../auth'
+import { useAuth } from '../auth.jsx'
 
 function Stars({ n }) {
   const v = Math.max(0, Math.min(5, Number(n || 0)))

@@ -41,12 +41,18 @@ def _ensure_schema() -> None:
     if dialect.startswith("sqlite"):
         # SQLite: no IF NOT EXISTS for ADD COLUMN in older versions; ignore failures.
         _exec('ALTER TABLE "user" ADD COLUMN telegram_chat_id VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN is_active BOOLEAN DEFAULT 1')
+        _exec('ALTER TABLE "user" ADD COLUMN token_version INTEGER DEFAULT 0')
+        _exec('ALTER TABLE "user" ADD COLUMN last_login_at DATETIME')
         _exec('ALTER TABLE "user" ADD COLUMN notify_email BOOLEAN DEFAULT 1')
         _exec('ALTER TABLE "user" ADD COLUMN notify_telegram BOOLEAN DEFAULT 0')
         _exec('ALTER TABLE booking ADD COLUMN reminder_sent BOOLEAN DEFAULT 0')
         _exec('ALTER TABLE booking ADD COLUMN reminder_sent_at DATETIME')
     elif dialect.startswith("postgres"):
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE')
+        _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0')
+        _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS notify_email BOOLEAN DEFAULT TRUE')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS notify_telegram BOOLEAN DEFAULT FALSE')
         _exec('ALTER TABLE booking ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE')

@@ -16,14 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
-from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from auth import (
-    ALGORITHM,
-    SECRET_KEY,
     create_access_token,
+    create_refresh_token,
+    decode_and_get_user,
     get_current_user,
     hash_password,
     require_role,
@@ -63,12 +62,34 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup():
-    # Create tables (no migrations in MVP)
-    from db import init_db
+    # Create tables (no migrations in MVP) and bootstrap admin if configured.
+    from db import init_db, engine
 
     init_db()
 
-
+    admin_email = (os.getenv('DL_BOOTSTRAP_ADMIN_EMAIL') or '').strip().lower()
+    admin_password = os.getenv('DL_BOOTSTRAP_ADMIN_PASSWORD') or ''
+    if admin_email and admin_password:
+        with Session(engine) as session:
+            u = session.exec(select(User).where(User.email == admin_email)).first()
+            if not u:
+                u = User(email=admin_email, password_hash=hash_password(admin_password), role='admin')
+                session.add(u)
+                session.commit()
+                session.refresh(u)
+                print(f'[bootstrap] created admin user: {admin_email}')
+            else:
+                changed = False
+                if u.role != 'admin':
+                    u.role = 'admin'
+                    changed = True
+                if not getattr(u, 'is_active', True):
+                    u.is_active = True
+                    changed = True
+                if changed:
+                    session.add(u)
+                    session.commit()
+                    print(f'[bootstrap] updated admin user: {admin_email}')
 @app.get("/health")
 def health():
     return {"ok": True, "ts": datetime.utcnow().isoformat()}
@@ -241,23 +262,94 @@ def _notify_booking_event(
 # Auth
 # -----------------
 
+from fastapi import Cookie
+
 
 class RegisterIn(BaseModel):
     email: str
-    password: str = Field(min_length=6)
+    password: str
     role: str = "student"  # student|tutor
 
 
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    expires_in: int
+    me: Dict[str, Any]
+
+
+def _password_ok(pw: str) -> bool:
+    pw = pw or ""
+    if len(pw) < 8:
+        return False
+    has_letter = any(c.isalpha() for c in pw)
+    has_digit = any(c.isdigit() for c in pw)
+    return has_letter and has_digit
+
+
+def _cookie_secure() -> bool:
+    v = (os.getenv("DL_COOKIE_SECURE") or "").strip().lower()
+    return v in {"1", "true", "yes"}
+
+
+def _set_refresh_cookie(resp: Response, refresh_token: str) -> None:
+    resp.set_cookie(
+        key="dl_refresh",
+        value=refresh_token,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        path="/api/auth",
+        max_age=60 * 60 * 24 * int(os.getenv("DL_REFRESH_EXPIRE_DAYS", "30")),
+    )
+
+
+def _clear_refresh_cookie(resp: Response) -> None:
+    resp.delete_cookie(key="dl_refresh", path="/api/auth")
+
+
+def _me_payload(user: User) -> Dict[str, Any]:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "is_active": getattr(user, "is_active", True),
+        "telegram_chat_id": getattr(user, "telegram_chat_id", None),
+        "notify_email": getattr(user, "notify_email", True),
+        "notify_telegram": getattr(user, "notify_telegram", False),
+    }
+
+
+def _issue_tokens(user: User, session: Session, resp: Response) -> TokenOut:
+    # Update last_login_at best-effort
+    try:
+        user.last_login_at = datetime.utcnow()
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+    except Exception:
+        pass
+
+    access = create_access_token(user)
+    refresh = create_refresh_token(user)
+    _set_refresh_cookie(resp, refresh)
+
+    return TokenOut(
+        access_token=access,
+        expires_in=int(os.getenv("DL_ACCESS_EXPIRE_MIN", "15")) * 60,
+        me=_me_payload(user),
+    )
 
 
 @app.post("/api/auth/register", response_model=TokenOut)
-def register(payload: RegisterIn, session: Session = Depends(get_session)):
-    email = payload.email.strip().lower()
+def register(payload: RegisterIn, response: Response, session: Session = Depends(get_session)):
+    email = (payload.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "invalid email")
     if payload.role not in {"student", "tutor"}:
         raise HTTPException(400, "role must be student or tutor")
+    if not _password_ok(payload.password):
+        raise HTTPException(400, "password must be 8+ chars and contain letters + digits")
 
     existing = session.exec(select(User).where(User.email == email)).first()
     if existing:
@@ -273,34 +365,83 @@ def register(payload: RegisterIn, session: Session = Depends(get_session)):
         session.add(profile)
         session.commit()
 
-    token = create_access_token(subject=user.email)
-    return TokenOut(access_token=token)
+    return _issue_tokens(user, session, response)
 
 
 @app.post("/api/auth/login", response_model=TokenOut)
 def login(
+    response: Response,
     form: OAuth2PasswordRequestForm = Depends(),
     session: Session = Depends(get_session),
 ):
-    email = form.username.strip().lower()
+    email = (form.username or "").strip().lower()
     user = session.exec(select(User).where(User.email == email)).first()
     if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(401, "invalid credentials")
+    if not getattr(user, "is_active", True):
+        raise HTTPException(403, "account disabled")
 
-    token = create_access_token(subject=user.email)
-    return TokenOut(access_token=token)
+    return _issue_tokens(user, session, response)
+
+
+@app.post("/api/auth/refresh", response_model=TokenOut)
+def refresh(
+    response: Response,
+    session: Session = Depends(get_session),
+    dl_refresh: Optional[str] = Cookie(default=None, alias="dl_refresh"),
+):
+    if not dl_refresh:
+        raise HTTPException(401, "missing refresh token")
+    _, user = decode_and_get_user(dl_refresh, session, expected_typ="refresh")
+    if not getattr(user, "is_active", True):
+        raise HTTPException(403, "account disabled")
+
+    # Rotate refresh token by re-issuing.
+    return _issue_tokens(user, session, response)
+
+
+@app.post("/api/auth/logout")
+def logout(
+    response: Response,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Invalidate all tokens by bumping token_version.
+    user.token_version = int(getattr(user, "token_version", 0)) + 1
+    session.add(user)
+    session.commit()
+    _clear_refresh_cookie(response)
+    return {"ok": True}
+
+
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@app.post("/api/auth/change-password")
+def change_password(
+    payload: ChangePasswordIn,
+    response: Response,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not verify_password(payload.old_password, user.password_hash):
+        raise HTTPException(400, "wrong password")
+    if not _password_ok(payload.new_password):
+        raise HTTPException(400, "password must be 8+ chars and contain letters + digits")
+
+    user.password_hash = hash_password(payload.new_password)
+    user.token_version = int(getattr(user, "token_version", 0)) + 1
+    session.add(user)
+    session.commit()
+    _clear_refresh_cookie(response)
+    return {"ok": True}
 
 
 @app.get("/api/me")
 def me(user: User = Depends(get_current_user)):
-    return {
-        "id": user.id,
-        "email": user.email,
-        "role": user.role,
-        "telegram_chat_id": user.telegram_chat_id,
-        "notify_email": user.notify_email,
-        "notify_telegram": user.notify_telegram,
-    }
+    return _me_payload(user)
 
 
 class MeSettingsIn(BaseModel):
@@ -312,9 +453,9 @@ class MeSettingsIn(BaseModel):
 @app.get("/api/me/settings")
 def me_settings(user: User = Depends(get_current_user)):
     return {
-        "telegram_chat_id": user.telegram_chat_id,
-        "notify_email": user.notify_email,
-        "notify_telegram": user.notify_telegram,
+        "telegram_chat_id": getattr(user, "telegram_chat_id", None),
+        "notify_email": getattr(user, "notify_email", True),
+        "notify_telegram": getattr(user, "notify_telegram", False),
     }
 
 
@@ -325,7 +466,6 @@ def update_me_settings(
     session: Session = Depends(get_session),
 ):
     data = payload.model_dump(exclude_unset=True)
-    # Normalize telegram chat id
     if "telegram_chat_id" in data:
         chat = (data["telegram_chat_id"] or "").strip()
         user.telegram_chat_id = chat or None
@@ -339,12 +479,181 @@ def update_me_settings(
     session.refresh(user)
     return {
         "ok": True,
-        "telegram_chat_id": user.telegram_chat_id,
-        "notify_email": user.notify_email,
-        "notify_telegram": user.notify_telegram,
+        "telegram_chat_id": getattr(user, "telegram_chat_id", None),
+        "notify_email": getattr(user, "notify_email", True),
+        "notify_telegram": getattr(user, "notify_telegram", False),
     }
 
 
+# -----------------
+# Admin (RBAC)
+# -----------------
+
+
+class AdminUserOut(BaseModel):
+    id: int
+    email: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    last_login_at: Optional[datetime] = None
+
+
+class AdminUserUpdateIn(BaseModel):
+    role: Optional[str] = None  # student|tutor|admin
+    is_active: Optional[bool] = None
+    reset_password: Optional[str] = None
+
+
+@app.get("/api/admin/users", response_model=List[AdminUserOut])
+def admin_list_users(
+    q: Optional[str] = None,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    stmt = select(User)
+    if q:
+        qq = q.strip().lower()
+        stmt = stmt.where(User.email.contains(qq))
+    users = session.exec(stmt.order_by(User.created_at.desc())).all()
+    return [
+        AdminUserOut(
+            id=u.id,
+            email=u.email,
+            role=u.role,
+            is_active=getattr(u, "is_active", True),
+            created_at=u.created_at,
+            last_login_at=getattr(u, "last_login_at", None),
+        )
+        for u in users
+    ]
+
+
+@app.patch("/api/admin/users/{user_id}")
+def admin_update_user(
+    user_id: int,
+    payload: AdminUserUpdateIn,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    u = session.get(User, user_id)
+    if not u:
+        raise HTTPException(404, "user not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    if "role" in data:
+        if data["role"] not in {"student", "tutor", "admin"}:
+            raise HTTPException(400, "invalid role")
+        u.role = data["role"]
+    if "is_active" in data:
+        u.is_active = bool(data["is_active"])
+    if "reset_password" in data and data["reset_password"]:
+        if len(data["reset_password"]) < 8:
+            raise HTTPException(400, "password too short")
+        u.password_hash = hash_password(data["reset_password"])
+        # Invalidate sessions
+        u.token_version = int(getattr(u, "token_version", 0)) + 1
+
+    session.add(u)
+    session.commit()
+    session.refresh(u)
+    return {
+        "ok": True,
+        "id": u.id,
+        "email": u.email,
+        "role": u.role,
+        "is_active": getattr(u, "is_active", True),
+    }
+
+
+class AdminTutorOut(BaseModel):
+    id: int
+    user_id: int
+    email: str
+    display_name: str
+    is_published: bool
+    updated_at: datetime
+    rating_avg: float
+    rating_count: int
+
+
+class AdminTutorUpdateIn(BaseModel):
+    is_published: Optional[bool] = None
+    display_name: Optional[str] = None
+
+
+@app.get("/api/admin/tutors", response_model=List[AdminTutorOut])
+def admin_list_tutors(
+    only_pending: bool = False,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    stmt = select(TutorProfile)
+    if only_pending:
+        stmt = stmt.where(TutorProfile.is_published == False)  # noqa: E712
+    profiles = session.exec(stmt.order_by(TutorProfile.updated_at.desc())).all()
+
+    # map user emails
+    user_ids = list({p.user_id for p in profiles})
+    users = session.exec(select(User).where(User.id.in_(user_ids))).all() if user_ids else []
+    email_map = {u.id: u.email for u in users}
+
+    return [
+        AdminTutorOut(
+            id=p.id,
+            user_id=p.user_id,
+            email=email_map.get(p.user_id, ""),
+            display_name=p.display_name,
+            is_published=p.is_published,
+            updated_at=p.updated_at,
+            rating_avg=p.rating_avg,
+            rating_count=p.rating_count,
+        )
+        for p in profiles
+    ]
+
+
+@app.patch("/api/admin/tutors/{profile_id}")
+def admin_update_tutor(
+    profile_id: int,
+    payload: AdminTutorUpdateIn,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    p = session.get(TutorProfile, profile_id)
+    if not p:
+        raise HTTPException(404, "profile not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "is_published" in data:
+        p.is_published = bool(data["is_published"])
+    if "display_name" in data and data["display_name"] is not None:
+        p.display_name = str(data["display_name"])[:80]
+    p.updated_at = datetime.utcnow()
+
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return {"ok": True, "id": p.id, "is_published": p.is_published, "display_name": p.display_name}
+
+
+@app.get("/api/admin/overview")
+def admin_overview(
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    # lightweight overview for admin dashboard
+    users = session.exec(select(User)).all()
+    profiles = session.exec(select(TutorProfile)).all()
+    bookings = session.exec(select(Booking)).all()
+    return {
+        "users": len(users),
+        "tutors": len([u for u in users if u.role == "tutor"]),
+        "students": len([u for u in users if u.role == "student"]),
+        "admins": len([u for u in users if u.role == "admin"]),
+        "profiles": len(profiles),
+        "published_profiles": len([p for p in profiles if p.is_published]),
+        "bookings": len(bookings),
+    }
 # -----------------
 # Tutors
 # -----------------
@@ -1723,19 +2032,9 @@ manager = WSManager()
 
 
 def _user_from_token(token: str, session: Session) -> User:
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email = payload.get("sub")
-        if not email:
-            raise HTTPException(401, "Invalid token")
-    except JWTError:
-        raise HTTPException(401, "Invalid token")
-
-    user = session.exec(select(User).where(User.email == str(email))).first()
-    if not user:
-        raise HTTPException(401, "Invalid token")
+    # WebSocket auth uses the same access token as HTTP.
+    _, user = decode_and_get_user(token, session, expected_typ="access")
     return user
-
 
 async def _ws_auth(ws: WebSocket, session: Session) -> User:
     token = ws.query_params.get("token")

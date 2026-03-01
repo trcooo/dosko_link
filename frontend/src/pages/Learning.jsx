@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useAuth } from '../auth'
+import { useAuth } from '../auth.jsx'
 import { apiFetch, apiUrl } from '../api'
 
 function fmt(dt) {

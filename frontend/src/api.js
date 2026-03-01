@@ -4,9 +4,35 @@ export function apiUrl(path) {
   return `${API_BASE}${path}`
 }
 
-export async function apiFetch(path, { method = 'GET', token, body, headers } = {}) {
+let _tokenUpdater = null
+export function registerTokenUpdater(fn) {
+  _tokenUpdater = fn
+}
+
+async function parseJsonSafe(res) {
+  const text = await res.text()
+  try { return text ? JSON.parse(text) : null } catch { return text }
+}
+
+async function refreshToken() {
+  const res = await fetch(apiUrl('/api/auth/refresh'), {
+    method: 'POST',
+    credentials: 'include'
+  })
+  const data = await parseJsonSafe(res)
+  if (!res.ok) throw new Error((data && (data.detail || data.message)) || 'Refresh failed')
+
+  if (data && data.access_token) {
+    localStorage.setItem('dl_token', data.access_token)
+    if (typeof _tokenUpdater === 'function') _tokenUpdater(data.access_token)
+  }
+  return data
+}
+
+export async function apiFetch(path, { method = 'GET', token, body, headers, _retried } = {}) {
   const res = await fetch(apiUrl(path), {
     method,
+    credentials: 'include',
     headers: {
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -15,10 +41,20 @@ export async function apiFetch(path, { method = 'GET', token, body, headers } = 
     body: body ? JSON.stringify(body) : undefined
   })
 
-  const text = await res.text()
-  let data
-  try { data = text ? JSON.parse(text) : null } catch { data = text }
+  // If token expired, try refresh once and retry.
+  if (res.status === 401 && token && !_retried) {
+    try {
+      const r = await refreshToken()
+      const newToken = r?.access_token
+      if (newToken) {
+        return apiFetch(path, { method, token: newToken, body, headers, _retried: true })
+      }
+    } catch {
+      // fallthrough to error
+    }
+  }
 
+  const data = await parseJsonSafe(res)
   if (!res.ok) {
     const msg = (data && (data.detail || data.message)) || `HTTP ${res.status}`
     throw new Error(msg)
@@ -27,9 +63,10 @@ export async function apiFetch(path, { method = 'GET', token, body, headers } = 
 }
 
 // For multipart uploads (FormData). No JSON encoding.
-export async function apiUpload(path, { method = 'POST', token, formData, headers } = {}) {
+export async function apiUpload(path, { method = 'POST', token, formData, headers, _retried } = {}) {
   const res = await fetch(apiUrl(path), {
     method,
+    credentials: 'include',
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(headers || {})
@@ -37,9 +74,19 @@ export async function apiUpload(path, { method = 'POST', token, formData, header
     body: formData
   })
 
-  const text = await res.text()
-  let data
-  try { data = text ? JSON.parse(text) : null } catch { data = text }
+  if (res.status === 401 && token && !_retried) {
+    try {
+      const r = await refreshToken()
+      const newToken = r?.access_token
+      if (newToken) {
+        return apiUpload(path, { method, token: newToken, formData, headers, _retried: true })
+      }
+    } catch {
+      // fallthrough
+    }
+  }
+
+  const data = await parseJsonSafe(res)
   if (!res.ok) {
     const msg = (data && (data.detail || data.message)) || `HTTP ${res.status}`
     throw new Error(msg)
@@ -51,10 +98,34 @@ export async function login(email, password) {
   // OAuth2PasswordRequestForm expects x-www-form-urlencoded
   const res = await fetch(apiUrl('/api/auth/login'), {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ username: email, password })
   })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.detail || 'Login failed')
+  const data = await parseJsonSafe(res)
+  if (!res.ok) throw new Error((data && (data.detail || data.message)) || 'Login failed')
+
+  if (data && data.access_token) {
+    localStorage.setItem('dl_token', data.access_token)
+    if (typeof _tokenUpdater === 'function') _tokenUpdater(data.access_token)
+  }
   return data
+}
+
+export async function logout(token) {
+  try {
+    await apiFetch('/api/auth/logout', { method: 'POST', token })
+  } catch {
+    // ignore
+  }
+  localStorage.removeItem('dl_token')
+  if (typeof _tokenUpdater === 'function') _tokenUpdater('')
+}
+
+export async function changePassword(token, oldPassword, newPassword) {
+  return apiFetch('/api/auth/change-password', {
+    method: 'POST',
+    token,
+    body: { old_password: oldPassword, new_password: newPassword }
+  })
 }
