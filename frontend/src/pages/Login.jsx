@@ -97,6 +97,70 @@ export default function Login() {
           <button className="btn" type="button" onClick={() => nav('/register')}>Регистрация</button>
         </div>
       </form>
+
+<div style={{ marginTop: 14 }}>
+  <DemoAccounts
+    onPick={(e, p) => {
+      setEmail(e)
+      setPassword(p)
+      setErr('')
+    }}
+  />
+</div>
+    </div>
+  )
+}
+
+
+function DemoAccounts({ onPick }) {
+  const [open, setOpen] = useState(false)
+  const password = 'DemoPass123!'
+  const tutors = [
+    { email: 'tutor1@demo.dl', label: 'Репетитор (математика)' },
+    { email: 'tutor2@demo.dl', label: 'Репетитор (английский)' },
+    { email: 'tutor3@demo.dl', label: 'Репетитор (физика)' },
+  ]
+  const students = [
+    { email: 'student1@demo.dl', label: 'Ученик' },
+    { email: 'student2@demo.dl', label: 'Ученик' },
+  ]
+  const admin = { email: 'admin@demo.dl', label: 'Админ (если включён seed)' }
+
+  return (
+    <div className="card" style={{ background: 'rgba(255,255,255,0.65)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <div>
+          <div style={{ fontWeight: 900 }}>Демо-аккаунты</div>
+          <div className="small">Работают, если в Railway включён <b>DL_SEED_DEMO=true</b>. Пароль: <b>{password}</b></div>
+        </div>
+        <button className="btn" type="button" onClick={() => setOpen(v => !v)}>{open ? 'Скрыть' : 'Показать'}</button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+          <div className="small" style={{ opacity: 0.8 }}>Репетиторы</div>
+          {tutors.map(t => (
+            <div key={t.email} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div className="small"><b>{t.email}</b> — {t.label}</div>
+              <button className="btn btnPrimary" type="button" onClick={() => onPick?.(t.email, password)}>Вставить</button>
+            </div>
+          ))}
+
+          <div className="small" style={{ opacity: 0.8, marginTop: 8 }}>Ученики</div>
+          {students.map(s => (
+            <div key={s.email} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div className="small"><b>{s.email}</b> — {s.label}</div>
+              <button className="btn btnPrimary" type="button" onClick={() => onPick?.(s.email, password)}>Вставить</button>
+            </div>
+          ))}
+
+          <div className="small" style={{ opacity: 0.8, marginTop: 8 }}>Админ</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+            <div className="small"><b>{admin.email}</b> — {admin.label}</div>
+            <button className="btn btnPrimary" type="button" onClick={() => onPick?.(admin.email, password)}>Вставить</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

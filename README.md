@@ -156,3 +156,36 @@ Variables:
 - `DL_CORS_ORIGINS` (если выносишь фронт отдельно)
 - SMTP/Telegram/Cron variables
 
+
+
+## Демо-данные (тестовые репетиторы и ученики)
+
+Чтобы быстро показать маркетплейс и комнату урока, можно включить автоматическое создание тестовых пользователей, профилей, слотов и пары занятий.
+
+В Railway → Variables добавьте:
+
+- `DL_SEED_DEMO=true`
+- (опционально) `DL_DEMO_PASSWORD=DemoPass123!`
+- (опционально) `DL_DEMO_ADMIN_EMAIL=admin@demo.dl`
+
+После этого сделайте **Redeploy**.
+
+### Демо-логины (по умолчанию пароль `DemoPass123!`)
+Репетиторы:
+- `tutor1@demo.dl` (математика)
+- `tutor2@demo.dl` (английский)
+- `tutor3@demo.dl` (физика)
+- `tutor4@demo.dl` (информатика)
+- `tutor5@demo.dl` (русский)
+- `tutor6@demo.dl` (химия)
+
+Ученики:
+- `student1@demo.dl`
+- `student2@demo.dl`
+- `student3@demo.dl`
+- `student4@demo.dl`
+- `student5@demo.dl`
+- `student6@demo.dl`
+
+Админ:
+- `admin@demo.dl` (создаётся при `DL_SEED_DEMO=true`)

@@ -17,7 +17,7 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
   const wrapRef = useRef(null)
   const wsRef = useRef(null)
 
-  const [tool, setTool] = useState('pen') // pen | eraser
+  const [tool, setTool] = useState('pen') // pen | eraser | text
   const [width, setWidth] = useState(3)
 
   const historyRef = useRef([]) // draw segments history for redraw/export
@@ -76,6 +76,21 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     ctx.lineTo(px1, py1)
     ctx.stroke()
   }
+function drawText({ x, y, text, size = 18, color = '#111827' }) {
+  const ctx = getCtx()
+  const wrap = wrapRef.current
+  if (!ctx || !wrap) return
+
+  const rect = wrap.getBoundingClientRect()
+  const px = x * rect.width
+  const py = y * 520
+
+  ctx.fillStyle = color
+  ctx.font = `${size}px system-ui, -apple-system, Segoe UI, Roboto, Arial`
+  ctx.textBaseline = 'top'
+  ctx.fillText(String(text || '').slice(0, 200), px, py)
+}
+
 
   function clearBoard(resetHistory = true) {
     const ctx = getCtx()
@@ -121,11 +136,24 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
   }
 
   function onDown(e) {
-    if (e.button !== undefined && e.button !== 0) return
-    drawing.current = true
-    const p = pointerToNorm(e)
-    last.current = p
+  if (e.button !== undefined && e.button !== 0) return
+  const p = pointerToNorm(e)
+
+  if (tool === 'text') {
+    const t = prompt('Текст на доске:')
+    if (t && t.trim()) {
+      const msg = { type: 'text', x: p.x, y: p.y, text: t.trim(), size: 18, color: '#111827' }
+      drawText(msg)
+      historyRef.current.push(msg)
+      send(msg)
+    }
+    drawing.current = false
+    return
   }
+
+  drawing.current = true
+  last.current = p
+}
 
   function onMove(e) {
     if (!drawing.current) return
@@ -165,7 +193,12 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
         drawLine(msg)
         historyRef.current.push(msg)
       }
-      if (msg.type === 'clear') {
+      
+if (msg.type === 'text') {
+  drawText(msg)
+  historyRef.current.push(msg)
+}
+if (msg.type === 'clear') {
         clearBoard()
         historyRef.current.push({ type: 'clear' })
       }
@@ -181,6 +214,7 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
       <div className="canvasTools">
         <button className={`btn ${tool === 'pen' ? 'btnPrimary' : ''}`} onClick={() => setTool('pen')}>Перо</button>
         <button className={`btn ${tool === 'eraser' ? 'btnPrimary' : ''}`} onClick={() => setTool('eraser')}>Ластик</button>
+        <button className={`btn ${tool === 'text' ? 'btnPrimary' : ''}`} onClick={() => setTool('text')}>Текст</button>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
           <span className="small">Толщина</span>

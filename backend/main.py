@@ -97,6 +97,13 @@ def _startup():
                     session.add(u)
                     session.commit()
                     print(f'[bootstrap] updated admin user: {admin_email}')
+    # Seed demo accounts for quick testing (optional)
+    try:
+        from seed import seed_demo
+        with Session(engine) as session:
+            seed_demo(session)
+    except Exception as e:
+        print(f'[seed] failed: {e}')
 @app.get("/health")
 def health():
     return {"ok": True, "ts": datetime.utcnow().isoformat()}
