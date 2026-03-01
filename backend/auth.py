@@ -23,7 +23,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("DL_ACCESS_EXPIRE_MIN", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("DL_REFRESH_EXPIRE_DAYS", "30"))
 
-pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
 
 # The frontend sends the access token in Authorization: Bearer <token>
 # Refresh token is stored in an HttpOnly cookie handled by the backend.

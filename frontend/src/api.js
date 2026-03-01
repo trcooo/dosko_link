@@ -1,7 +1,23 @@
-const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:8000' : '')
+const ENV_API_BASE = (import.meta.env.VITE_API_BASE || '').trim()
+const USE_EXTERNAL_API = String(import.meta.env.VITE_USE_EXTERNAL_API || '').toLowerCase() === 'true'
+
+// MVP single-service default:
+// - dev: call local backend
+// - prod: same origin (ignore VITE_API_BASE unless VITE_USE_EXTERNAL_API=true)
+const API_BASE = import.meta.env.DEV
+  ? (ENV_API_BASE || 'http://localhost:8000')
+  : ((USE_EXTERNAL_API && ENV_API_BASE) ? ENV_API_BASE : '')
 
 export function apiUrl(path) {
   return `${API_BASE}${path}`
+}
+
+function prettyNetworkError(err) {
+  const msg = (err && err.message) ? String(err.message) : ''
+  if (/Failed to fetch|NetworkError|ECONN|ENOTFOUND|ERR_NETWORK|CORS/i.test(msg)) {
+    return 'Не удалось подключиться к серверу. Проверь, что бэкенд запущен, домен API корректный и нет проблем с CORS.'
+  }
+  return msg || 'Network error'
 }
 
 let _tokenUpdater = null
@@ -14,8 +30,16 @@ async function parseJsonSafe(res) {
   try { return text ? JSON.parse(text) : null } catch { return text }
 }
 
+async function fetchSafe(url, init) {
+  try {
+    return await fetch(url, init)
+  } catch (err) {
+    throw new Error(prettyNetworkError(err))
+  }
+}
+
 async function refreshToken() {
-  const res = await fetch(apiUrl('/api/auth/refresh'), {
+  const res = await fetchSafe(apiUrl('/api/auth/refresh'), {
     method: 'POST',
     credentials: 'include'
   })
@@ -30,7 +54,7 @@ async function refreshToken() {
 }
 
 export async function apiFetch(path, { method = 'GET', token, body, headers, _retried } = {}) {
-  const res = await fetch(apiUrl(path), {
+  const res = await fetchSafe(apiUrl(path), {
     method,
     credentials: 'include',
     headers: {
@@ -64,7 +88,7 @@ export async function apiFetch(path, { method = 'GET', token, body, headers, _re
 
 // For multipart uploads (FormData). No JSON encoding.
 export async function apiUpload(path, { method = 'POST', token, formData, headers, _retried } = {}) {
-  const res = await fetch(apiUrl(path), {
+  const res = await fetchSafe(apiUrl(path), {
     method,
     credentials: 'include',
     headers: {
@@ -95,8 +119,7 @@ export async function apiUpload(path, { method = 'POST', token, formData, header
 }
 
 export async function login(email, password) {
-  // OAuth2PasswordRequestForm expects x-www-form-urlencoded
-  const res = await fetch(apiUrl('/api/auth/login'), {
+  const res = await fetchSafe(apiUrl('/api/auth/login'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

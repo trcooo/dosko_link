@@ -148,3 +148,24 @@ class PreLessonCheckin(SQLModel, table=True):
     submitted_at: Optional[datetime] = Field(default=None, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class IssueReport(SQLModel, table=True):
+    """Simple support ticket / report (MVP).
+
+    Used for: "problem with lesson", user reports, abuse, etc.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+    booking_id: Optional[int] = Field(default=None, index=True)
+    reporter_user_id: int = Field(index=True)
+    reported_user_id: Optional[int] = Field(default=None, index=True)
+
+    category: str = Field(default="general", index=True)  # general | lesson | user | payments (future)
+    message: str = Field(default="")
+
+    status: str = Field(default="open", index=True)  # open | resolved
+    resolved_by_user_id: Optional[int] = Field(default=None, index=True)
+    resolved_at: Optional[datetime] = Field(default=None)

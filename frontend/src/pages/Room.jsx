@@ -102,6 +102,27 @@ export default function Room() {
     }
   }
 
+
+
+  async function reportIssue() {
+    if (!info?.booking?.id) return
+    const msg = prompt('Опиши проблему (кратко). Заявка уйдёт админу:')
+    if (!msg) return
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch('/api/reports', {
+        method: 'POST',
+        token,
+        body: { booking_id: info.booking.id, category: 'lesson', message: msg }
+      })
+      alert('Заявка отправлена админу.')
+    } catch (e) {
+      setErr(e.message || 'Не удалось отправить')
+    } finally {
+      setBusy(false)
+    }
+  }
   async function saveWhiteboard() {
     if (!info?.booking?.id) return
     const dataUrl = wbRef.current?.exportPngDataUrl?.()
@@ -275,6 +296,7 @@ export default function Room() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <Link className="btn" to="/dashboard">В кабинет</Link>
             <Link className="btn" to="/">К поиску</Link>
+            <button className="btn" onClick={reportIssue} disabled={busy}>Проблема</button>
             {canAct && !isDone && (
               <button className="btn" onClick={cancelLesson} disabled={busy}>Отменить</button>
             )}

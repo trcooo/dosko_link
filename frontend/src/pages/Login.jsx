@@ -15,8 +15,10 @@ export default function Login() {
     setErr('')
     setLoading(true)
     try {
-      await login(email, password)
-      nav('/dashboard')
+      const data = await login(email, password)
+      if (!data?.access_token) throw new Error('Не удалось войти: токен не получен')
+      if (data?.me?.role === 'admin') nav('/admin')
+      else nav('/dashboard')
     } catch (e2) {
       setErr(e2.message || 'Ошибка входа')
     } finally {

@@ -35,6 +35,7 @@ from models import (
     LessonArtifact,
     LessonMaterial,
     PreLessonCheckin,
+    IssueReport,
     Review,
     Slot,
     TopicProgress,
@@ -645,6 +646,13 @@ def admin_overview(
     users = session.exec(select(User)).all()
     profiles = session.exec(select(TutorProfile)).all()
     bookings = session.exec(select(Booking)).all()
+    reviews = session.exec(select(Review)).all()
+    open_reports = session.exec(select(IssueReport).where(IssueReport.status == "open")).all()
+
+    by_status = {"confirmed": 0, "cancelled": 0, "done": 0}
+    for b in bookings:
+        by_status[b.status] = by_status.get(b.status, 0) + 1
+
     return {
         "users": len(users),
         "tutors": len([u for u in users if u.role == "tutor"]),
@@ -653,7 +661,352 @@ def admin_overview(
         "profiles": len(profiles),
         "published_profiles": len([p for p in profiles if p.is_published]),
         "bookings": len(bookings),
+        "bookings_confirmed": by_status.get("confirmed", 0),
+        "bookings_cancelled": by_status.get("cancelled", 0),
+        "bookings_done": by_status.get("done", 0),
+        "reviews": len(reviews),
+        "open_reports": len(open_reports),
     }
+# -----------------
+# Admin: bookings / reviews / reports
+# -----------------
+
+
+class AdminBookingOut(BaseModel):
+    id: int
+    status: str
+    created_at: datetime
+    slot_id: int
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    tutor_user_id: int
+    tutor_email: str
+    student_user_id: int
+    student_email: str
+
+
+class AdminBookingPatchIn(BaseModel):
+    status: Optional[str] = None  # confirmed|cancelled|done
+    slot_id: Optional[int] = None  # reschedule to another slot (same tutor)
+
+
+def _booking_to_admin_out(b: Booking, session: Session) -> AdminBookingOut:
+    slot = session.get(Slot, b.slot_id)
+    tutor = session.get(User, b.tutor_user_id)
+    student = session.get(User, b.student_user_id)
+    return AdminBookingOut(
+        id=b.id,
+        status=b.status,
+        created_at=b.created_at,
+        slot_id=b.slot_id,
+        starts_at=getattr(slot, 'starts_at', None) if slot else None,
+        ends_at=getattr(slot, 'ends_at', None) if slot else None,
+        tutor_user_id=b.tutor_user_id,
+        tutor_email=getattr(tutor, 'email', '') if tutor else '',
+        student_user_id=b.student_user_id,
+        student_email=getattr(student, 'email', '') if student else '',
+    )
+
+
+@app.get('/api/admin/bookings', response_model=List[AdminBookingOut])
+def admin_list_bookings(
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    _: User = Depends(require_role('admin')),
+    session: Session = Depends(get_session),
+):
+    limit = max(1, min(int(limit or 100), 500))
+
+    stmt = select(Booking).order_by(Booking.created_at.desc())
+    if status:
+        stmt = stmt.where(Booking.status == status)
+
+    bookings = session.exec(stmt.limit(limit)).all()
+
+    if q:
+        qq = q.strip().lower()
+        # Filter in python by matching either tutor or student email
+        out = []
+        for b in bookings:
+            tutor = session.get(User, b.tutor_user_id)
+            student = session.get(User, b.student_user_id)
+            if (tutor and qq in tutor.email.lower()) or (student and qq in student.email.lower()):
+                out.append(b)
+        bookings = out
+
+    return [_booking_to_admin_out(b, session) for b in bookings]
+
+
+@app.patch('/api/admin/bookings/{booking_id}')
+def admin_patch_booking(
+    booking_id: int,
+    payload: AdminBookingPatchIn,
+    _: User = Depends(require_role('admin')),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+
+    data = payload.model_dump(exclude_unset=True)
+
+    if 'slot_id' in data and data['slot_id'] is not None:
+        new_slot = session.get(Slot, int(data['slot_id']))
+        if not new_slot:
+            raise HTTPException(404, 'slot not found')
+        if new_slot.tutor_user_id != b.tutor_user_id:
+            raise HTTPException(400, 'slot must belong to the same tutor')
+        if new_slot.status != 'open':
+            raise HTTPException(400, 'slot is not open')
+
+        # Release old slot
+        old_slot = session.get(Slot, b.slot_id)
+        if old_slot and old_slot.status == 'booked':
+            old_slot.status = 'open'
+            session.add(old_slot)
+
+        # Book new slot
+        new_slot.status = 'booked'
+        session.add(new_slot)
+
+        b.slot_id = new_slot.id
+        session.add(b)
+
+    if 'status' in data and data['status'] is not None:
+        st = str(data['status'])
+        if st not in {'confirmed', 'cancelled', 'done'}:
+            raise HTTPException(400, 'invalid status')
+        b.status = st
+        session.add(b)
+
+    session.commit()
+    session.refresh(b)
+    return {'ok': True, 'booking': _booking_to_admin_out(b, session).model_dump()}
+
+
+class AdminReviewOut(BaseModel):
+    id: int
+    booking_id: int
+    tutor_user_id: int
+    tutor_email: str
+    student_user_id: int
+    student_email: str
+    stars: int
+    text: str
+    created_at: datetime
+
+
+def _review_to_admin_out(r: Review, session: Session) -> AdminReviewOut:
+    tutor = session.get(User, r.tutor_user_id)
+    student = session.get(User, r.student_user_id)
+    return AdminReviewOut(
+        id=r.id,
+        booking_id=r.booking_id,
+        tutor_user_id=r.tutor_user_id,
+        tutor_email=getattr(tutor, 'email', '') if tutor else '',
+        student_user_id=r.student_user_id,
+        student_email=getattr(student, 'email', '') if student else '',
+        stars=r.stars,
+        text=r.text,
+        created_at=r.created_at,
+    )
+
+
+def _recompute_tutor_rating(session: Session, tutor_user_id: int) -> None:
+    profile = session.exec(select(TutorProfile).where(TutorProfile.user_id == tutor_user_id)).first()
+    if not profile:
+        return
+    rows = session.exec(select(Review).where(Review.tutor_user_id == tutor_user_id)).all()
+    if not rows:
+        profile.rating_avg = 0
+        profile.rating_count = 0
+    else:
+        total = sum(int(r.stars) for r in rows)
+        profile.rating_count = len(rows)
+        profile.rating_avg = float(total) / float(profile.rating_count)
+    profile.updated_at = datetime.utcnow()
+    session.add(profile)
+
+
+@app.get('/api/admin/reviews', response_model=List[AdminReviewOut])
+def admin_list_reviews(
+    q: Optional[str] = None,
+    stars: Optional[int] = None,
+    limit: int = 100,
+    _: User = Depends(require_role('admin')),
+    session: Session = Depends(get_session),
+):
+    limit = max(1, min(int(limit or 100), 500))
+    stmt = select(Review).order_by(Review.created_at.desc())
+    if stars is not None:
+        stmt = stmt.where(Review.stars == int(stars))
+    rows = session.exec(stmt.limit(limit)).all()
+
+    if q:
+        qq = q.strip().lower()
+        out = []
+        for r in rows:
+            tutor = session.get(User, r.tutor_user_id)
+            student = session.get(User, r.student_user_id)
+            if (tutor and qq in tutor.email.lower()) or (student and qq in student.email.lower()) or (qq in (r.text or '').lower()):
+                out.append(r)
+        rows = out
+
+    return [_review_to_admin_out(r, session) for r in rows]
+
+
+@app.delete('/api/admin/reviews/{review_id}')
+def admin_delete_review(
+    review_id: int,
+    _: User = Depends(require_role('admin')),
+    session: Session = Depends(get_session),
+):
+    r = session.get(Review, review_id)
+    if not r:
+        raise HTTPException(404, 'review not found')
+    tutor_id = r.tutor_user_id
+
+    session.delete(r)
+    session.commit()
+
+    # Recompute rating after delete
+    _recompute_tutor_rating(session, tutor_id)
+    session.commit()
+    return {'ok': True}
+
+
+class ReportIn(BaseModel):
+    booking_id: Optional[int] = None
+    category: str = Field(default='general')
+    message: str = Field(default='')
+
+
+class ReportOut(BaseModel):
+    id: int
+    created_at: datetime
+    booking_id: Optional[int] = None
+    reporter_user_id: int
+    reporter_email: str
+    reported_user_id: Optional[int] = None
+    reported_email: Optional[str] = None
+    category: str
+    message: str
+    status: str
+    resolved_by_user_id: Optional[int] = None
+    resolved_by_email: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+
+
+def _report_to_out(r: IssueReport, session: Session) -> ReportOut:
+    reporter = session.get(User, r.reporter_user_id)
+    reported = session.get(User, r.reported_user_id) if r.reported_user_id else None
+    resolver = session.get(User, r.resolved_by_user_id) if r.resolved_by_user_id else None
+    return ReportOut(
+        id=r.id,
+        created_at=r.created_at,
+        booking_id=r.booking_id,
+        reporter_user_id=r.reporter_user_id,
+        reporter_email=getattr(reporter, 'email', '') if reporter else '',
+        reported_user_id=r.reported_user_id,
+        reported_email=getattr(reported, 'email', None) if reported else None,
+        category=r.category,
+        message=r.message,
+        status=r.status,
+        resolved_by_user_id=r.resolved_by_user_id,
+        resolved_by_email=getattr(resolver, 'email', None) if resolver else None,
+        resolved_at=r.resolved_at,
+    )
+
+
+@app.post('/api/reports')
+def create_report(
+    payload: ReportIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    msg = (payload.message or '').strip()
+    if len(msg) < 3:
+        raise HTTPException(400, 'message too short')
+
+    booking_id = payload.booking_id
+    reported_user_id = None
+
+    if booking_id is not None:
+        booking = session.get(Booking, int(booking_id))
+        if not booking:
+            raise HTTPException(404, 'booking not found')
+        # Only participants (or admin) can report a booking
+        if user.role != 'admin' and user.id not in {booking.student_user_id, booking.tutor_user_id}:
+            raise HTTPException(403, 'no access')
+        # Set the "other side" as reported user
+        if user.id == booking.student_user_id:
+            reported_user_id = booking.tutor_user_id
+        elif user.id == booking.tutor_user_id:
+            reported_user_id = booking.student_user_id
+
+    r = IssueReport(
+        booking_id=int(booking_id) if booking_id is not None else None,
+        reporter_user_id=user.id,
+        reported_user_id=reported_user_id,
+        category=(payload.category or 'general')[:40],
+        message=msg[:2000],
+        status='open',
+    )
+    session.add(r)
+    session.commit()
+    session.refresh(r)
+    return {'ok': True, 'report_id': r.id}
+
+
+class AdminReportPatchIn(BaseModel):
+    status: Optional[str] = None  # open|resolved
+
+
+@app.get('/api/admin/reports', response_model=List[ReportOut])
+def admin_list_reports(
+    status: Optional[str] = 'open',
+    limit: int = 100,
+    _: User = Depends(require_role('admin')),
+    session: Session = Depends(get_session),
+):
+    limit = max(1, min(int(limit or 100), 500))
+    stmt = select(IssueReport).order_by(IssueReport.created_at.desc())
+    if status:
+        stmt = stmt.where(IssueReport.status == status)
+    rows = session.exec(stmt.limit(limit)).all()
+    return [_report_to_out(r, session) for r in rows]
+
+
+@app.patch('/api/admin/reports/{report_id}')
+def admin_patch_report(
+    report_id: int,
+    payload: AdminReportPatchIn,
+    admin: User = Depends(require_role('admin')),
+    session: Session = Depends(get_session),
+):
+    r = session.get(IssueReport, report_id)
+    if not r:
+        raise HTTPException(404, 'report not found')
+
+    data = payload.model_dump(exclude_unset=True)
+    if 'status' in data and data['status'] is not None:
+        st = str(data['status'])
+        if st not in {'open', 'resolved'}:
+            raise HTTPException(400, 'invalid status')
+        r.status = st
+        if st == 'resolved':
+            r.resolved_by_user_id = admin.id
+            r.resolved_at = datetime.utcnow()
+        else:
+            r.resolved_by_user_id = None
+            r.resolved_at = None
+
+    session.add(r)
+    session.commit()
+    session.refresh(r)
+    return {'ok': True, 'report': _report_to_out(r, session).model_dump()}
+
 # -----------------
 # Tutors
 # -----------------
