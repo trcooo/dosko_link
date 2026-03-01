@@ -434,7 +434,7 @@ export default function Admin() {
       )}
 
       <div className="footerNote">
-        Совет: для single-service MVP не задавай <b>VITE_API_BASE</b> в Railway. Если нужно внешнее API — задай <b>VITE_USE_EXTERNAL_API=true</b> и <b>VITE_API_BASE</b>.
+        Совет: для single-service MVP в Railway не задавай <b>VITE_API_BASE</b>. В проде API и WS работают на этом же домене автоматически; <b>VITE_API_BASE</b> используется только для локальной разработки.
       </div>
     </div>
   )

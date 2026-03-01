@@ -1,7 +1,10 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 
 function wsBaseFromApi() {
-  const api = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin)
+  const env = (import.meta.env.VITE_API_BASE || '').trim()
+  const api = import.meta.env.DEV
+    ? (env || 'http://localhost:8000')
+    : window.location.origin
   return api.replace(/^http/, 'ws')
 }
 

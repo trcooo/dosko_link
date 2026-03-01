@@ -1,12 +1,11 @@
 const ENV_API_BASE = (import.meta.env.VITE_API_BASE || '').trim()
-const USE_EXTERNAL_API = String(import.meta.env.VITE_USE_EXTERNAL_API || '').toLowerCase() === 'true'
 
-// MVP single-service default:
-// - dev: call local backend
-// - prod: same origin (ignore VITE_API_BASE unless VITE_USE_EXTERNAL_API=true)
+// MVP single-service (Railway):
+// - dev: can call local backend or VITE_API_BASE
+// - prod: ALWAYS same origin (avoid misconfig / CORS)
 const API_BASE = import.meta.env.DEV
   ? (ENV_API_BASE || 'http://localhost:8000')
-  : ((USE_EXTERNAL_API && ENV_API_BASE) ? ENV_API_BASE : '')
+  : ''
 
 export function apiUrl(path) {
   return `${API_BASE}${path}`
