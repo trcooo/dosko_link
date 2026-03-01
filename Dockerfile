@@ -1,31 +1,29 @@
 # Railway single-service deploy: builds frontend and serves it from FastAPI
 #
 # One service, one domain:
-# - Stage 1 builds the Vite frontend
+# - Stage 1 builds the Vite frontend (uses Yarn via Corepack to avoid npm flakiness on some builders)
 # - Stage 2 runs FastAPI and serves the built SPA from /static
-#
-# This Dockerfile is hardened for Railway builds where npm may default to
-# production installs (omitting devDependencies). Vite is required at build time.
 
 # Stage 1: build frontend
 FROM node:20-bookworm-slim AS frontend-build
 WORKDIR /app/frontend
 
-# Use a stable npm version and force devDependencies to be installed
-RUN npm i -g npm@10.9.2
-ENV NODE_ENV=development \
-    NPM_CONFIG_PRODUCTION=false \
-    NPM_CONFIG_OMIT=
+# Ensure devDependencies are installed (Vite is in devDependencies)
+ENV NODE_ENV=development
 
-# Copy lockfile explicitly (npm ci requires it)
-COPY frontend/package.json frontend/package-lock.json ./
+# Use Corepack-managed Yarn (no npm install -g yarn)
+RUN corepack enable && corepack prepare yarn@1.22.22 --activate
 
-# Install deps (dev deps included) and avoid optional deps to reduce flakiness
-RUN npm ci --no-audit --no-fund --omit=optional
+# Copy manifest/lock first for better layer caching
+COPY frontend/package*.json ./
 
-# Build
+# Install deps (includes dev deps by default)
+RUN yarn install --non-interactive --network-timeout 600000
+
+# Copy the rest and build
 COPY frontend/ ./
-RUN npm run build
+RUN yarn build
+
 
 # Stage 2: backend runtime
 FROM python:3.11-slim
