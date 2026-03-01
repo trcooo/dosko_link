@@ -12,7 +12,7 @@ function toLocalInputValue(d) {
 }
 
 export default function Dashboard() {
-  const { me, token, loading: authLoading, logout } = useAuth()
+  const { me, token, loading: authLoading, logout, balanceInfo, payBooking, refreshBalance } = useAuth()
   const nav = useNavigate()
 
   const [profile, setProfile] = useState(null)
@@ -42,6 +42,21 @@ export default function Dashboard() {
     if (authLoading) return
     if (!me) nav('/login')
   }, [authLoading, me, nav])
+
+
+  async function payBookingNow(bookingId) {
+    setErr('')
+    setSaving(true)
+    try {
+      await payBooking(bookingId)
+      await refreshBalance?.()
+      await load()
+    } catch (e) {
+      setErr(e.message || 'Ошибка оплаты')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function load() {
     if (!token || !me) return
@@ -383,10 +398,15 @@ export default function Dashboard() {
                       <div className="small">Слот #{b.slot_id} • комната: {b.room_id}</div>
                       {starts && <div className="small">Время: {starts}{ends ? ` — ${ends}` : ''}</div>}
                       <div className="small">Создано: {new Date(b.created_at).toLocaleString()}</div>
+                      <div className="small">Стоимость: {b.price || 0} ₽ • оплата: {b.payment_status || 'unpaid'}</div>
                     </div>
 
                     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                       <Link className="btn btnPrimary" to={`/room/${b.room_id}`}>Открыть комнату</Link>
+
+                      {me.role === 'student' && (b.payment_status !== 'paid') && !isCancelled && (
+                        <button className="btn btnPrimary" onClick={() => payBookingNow(b.id)} disabled={saving}>Оплатить</button>
+                      )}
 
                       {!isCancelled && !isDone && (
                         <>

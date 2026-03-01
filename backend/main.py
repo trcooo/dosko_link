@@ -44,12 +44,13 @@ from models import (
     StudyPlan,
     PlanItem,
     StudentLibraryItem,
+    BalanceTx,
     Quiz,
     QuizQuestion,
     QuizAttempt,
 )
 
-app = FastAPI(title="DL MVP API", version="0.6.0")
+app = FastAPI(title="DL MVP API", version="0.6.4")
 
 # -----------------
 # CORS
@@ -473,6 +474,136 @@ def me_settings(user: User = Depends(get_current_user)):
     }
 
 
+
+# -----------------
+# Trial balance (no real payments)
+# -----------------
+
+
+class TopUpIn(BaseModel):
+    amount: int = Field(ge=10, le=500000)  # RUB (trial)
+
+
+class BalanceOut(BaseModel):
+    balance: int
+    earnings: int
+    tx: List[Dict[str, Any]]
+
+
+@app.get("/api/balance", response_model=BalanceOut)
+def get_balance(user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    txs = session.exec(select(BalanceTx).where(BalanceTx.user_id == user.id).order_by(BalanceTx.created_at.desc()).limit(25)).all()
+    return BalanceOut(
+        balance=getattr(user, "balance", 0) or 0,
+        earnings=getattr(user, "earnings", 0) or 0,
+        tx=[{"id": t.id, "amount": t.amount, "kind": t.kind, "booking_id": t.booking_id, "note": t.note, "created_at": t.created_at} for t in txs],
+    )
+
+
+@app.post("/api/balance/topup", response_model=BalanceOut)
+def topup_balance(payload: TopUpIn, user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    # Trial top-up: just adds internal balance.
+    user.balance = int(getattr(user, "balance", 0) or 0) + int(payload.amount)
+    session.add(user)
+    session.add(BalanceTx(user_id=user.id, amount=int(payload.amount), kind="topup", note="trial topup"))
+    session.commit()
+    session.refresh(user)
+    return get_balance(user=user, session=session)
+
+
+class PayOut(BaseModel):
+    ok: bool = True
+    booking: BookingOut
+    balance: int
+    earnings: int
+
+
+@app.post("/api/bookings/{booking_id}/pay", response_model=PayOut)
+def pay_booking_with_balance(
+    booking_id: int,
+    user: User = Depends(require_role("student", "admin")),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, "booking not found")
+    _ensure_participant(b, user)
+    if user.role != "admin" and b.student_user_id != user.id:
+        raise HTTPException(403, "only student can pay")
+    if b.status != "confirmed":
+        raise HTTPException(400, "booking not active")
+    if getattr(b, "payment_status", "unpaid") == "paid":
+        raise HTTPException(400, "already paid")
+
+    price = int(getattr(b, "price", 0) or 0)
+    if price <= 0:
+        # allow free booking
+        b.payment_status = "paid"
+        b.paid_at = datetime.utcnow()
+        session.add(b)
+        session.commit()
+        session.refresh(b)
+        return PayOut(booking=_booking_to_out(b, session), balance=getattr(user, "balance", 0) or 0, earnings=getattr(user, "earnings", 0) or 0)
+
+    bal = int(getattr(user, "balance", 0) or 0)
+    if bal < price and user.role != "admin":
+        raise HTTPException(400, "insufficient balance")
+
+    # Deduct student balance
+    if user.role != "admin":
+        user.balance = bal - price
+        session.add(user)
+        session.add(BalanceTx(user_id=user.id, amount=-price, kind="pay", booking_id=b.id, note="lesson payment (trial)"))
+
+    # Credit tutor earnings (trial)
+    tutor = session.get(User, b.tutor_user_id)
+    if tutor:
+        tutor.earnings = int(getattr(tutor, "earnings", 0) or 0) + price
+        session.add(tutor)
+        session.add(BalanceTx(user_id=tutor.id, amount=price, kind="earn", booking_id=b.id, note="lesson earnings (trial)"))
+
+    b.payment_status = "paid"
+    b.paid_at = datetime.utcnow()
+    session.add(b)
+    session.commit()
+    session.refresh(b)
+
+    session.refresh(user)
+    return PayOut(ok=True, booking=_booking_to_out(b, session), balance=getattr(user, "balance", 0) or 0, earnings=getattr(user, "earnings", 0) or 0)
+
+
+class BalanceAdjustIn(BaseModel):
+    target: str = Field(default="balance")  # balance | earnings
+    amount: int
+    note: str = ""
+
+
+@app.post("/api/admin/users/{user_id}/balance-adjust", response_model=BalanceOut)
+def admin_balance_adjust(
+    user_id: int,
+    payload: BalanceAdjustIn,
+    admin: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    u = session.get(User, user_id)
+    if not u:
+        raise HTTPException(404, "user not found")
+    target = (payload.target or "balance").strip().lower()
+    amt = int(payload.amount)
+    if target not in {"balance", "earnings"}:
+        raise HTTPException(400, "invalid target")
+    if target == "balance":
+        u.balance = int(getattr(u, "balance", 0) or 0) + amt
+    else:
+        u.earnings = int(getattr(u, "earnings", 0) or 0) + amt
+    session.add(u)
+    session.add(BalanceTx(user_id=u.id, amount=amt, kind="adjust", note=(payload.note or "")[:200]))
+    session.commit()
+    session.refresh(u)
+    return get_balance(user=u, session=session)
+
+
+
 @app.put("/api/me/settings")
 def update_me_settings(
     payload: MeSettingsIn,
@@ -511,6 +642,8 @@ class AdminUserOut(BaseModel):
     is_active: bool
     created_at: datetime
     last_login_at: Optional[datetime] = None
+    balance: int = 0
+    earnings: int = 0
 
 
 class AdminUserUpdateIn(BaseModel):
@@ -538,6 +671,8 @@ def admin_list_users(
             is_active=getattr(u, "is_active", True),
             created_at=u.created_at,
             last_login_at=getattr(u, "last_login_at", None),
+            balance=getattr(u, "balance", 0) or 0,
+            earnings=getattr(u, "earnings", 0) or 0,
         )
         for u in users
     ]
@@ -1245,6 +1380,9 @@ class BookingOut(BaseModel):
     student_user_id: int
     status: str
     created_at: datetime
+    price: int = 0
+    payment_status: str = 'unpaid'
+    paid_at: Optional[datetime] = None
     room_id: str
     slot_starts_at: Optional[datetime] = None
     slot_ends_at: Optional[datetime] = None
@@ -1259,6 +1397,9 @@ def _booking_to_out(b: Booking, session: Session) -> BookingOut:
         student_user_id=b.student_user_id,
         status=b.status,
         created_at=b.created_at,
+        price=getattr(b, 'price', 0) or 0,
+        payment_status=getattr(b, 'payment_status', 'unpaid') or 'unpaid',
+        paid_at=getattr(b, 'paid_at', None),
         room_id=f"booking-{b.id}",
         slot_starts_at=slot.starts_at if slot else None,
         slot_ends_at=slot.ends_at if slot else None,
@@ -1278,11 +1419,19 @@ def book_slot(
     slot.status = "booked"
     session.add(slot)
 
+    # Compute trial price from tutor profile and slot duration
+    prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == slot.tutor_user_id)).first()
+    price_per_hour = int(prof.price_per_hour) if prof else 0
+    minutes = max(1, int((slot.ends_at - slot.starts_at).total_seconds() // 60))
+    price = int(round(price_per_hour * (minutes / 60)))
+
     booking = Booking(
         slot_id=slot.id,
         tutor_user_id=slot.tutor_user_id,
         student_user_id=user.id,
         status="confirmed",
+        price=price,
+        payment_status='unpaid',
     )
     session.add(booking)
     session.commit()

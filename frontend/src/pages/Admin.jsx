@@ -92,7 +92,30 @@ export default function Admin() {
 
   useEffect(() => { loadActive() }, [tab, token, canLoad])
 
-  async function updateUser(u, patch) {
+  
+  async function adjustBalance(user, target) {
+    const raw = prompt(`Сумма для ${target} (может быть отрицательной). Например: 500 или -200`)
+    if (!raw) return
+    const amount = Number(raw)
+    if (!Number.isFinite(amount) || Math.abs(amount) < 1) return
+    const note = prompt('Комментарий (опционально):') || ''
+    setSaving(true)
+    setErr('')
+    try {
+      await apiFetch(`/api/admin/users/${user.id}/balance-adjust`, {
+        method: 'POST',
+        token,
+        body: { target, amount: Math.trunc(amount), note }
+      })
+      await loadAll()
+    } catch (e) {
+      setErr(e.message || 'Ошибка изменения баланса')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+async function updateUser(u, patch) {
     setSaving(true)
     setErr('')
     try {
@@ -253,6 +276,7 @@ export default function Admin() {
                   <div>
                     <div style={{ fontWeight: 800 }}>#{u.id} • {u.email}</div>
                     <div className="small">role: {u.role} • active: {String(u.is_active)} • created: {new Date(u.created_at).toLocaleString()}</div>
+                    <div className="small">баланс: {u.balance ?? 0} ₽ • доход: {u.earnings ?? 0} ₽</div>
                   </div>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                     <select className="select" value={u.role} onChange={(e) => updateUser(u, { role: e.target.value })} disabled={saving}>
@@ -263,6 +287,8 @@ export default function Admin() {
                     <button className="btn" disabled={saving} onClick={() => updateUser(u, { is_active: !u.is_active })}>
                       {u.is_active ? 'Заблокировать' : 'Разблокировать'}
                     </button>
+                    <button className="btn" disabled={saving} onClick={() => adjustBalance(u, 'balance')}>Баланс ±</button>
+                    <button className="btn" disabled={saving} onClick={() => adjustBalance(u, 'earnings')}>Доход ±</button>
                     <button className="btn" disabled={saving} onClick={() => {
                       const pw = prompt('Новый пароль (8+):')
                       if (!pw) return

@@ -18,6 +18,9 @@ class User(SQLModel, table=True):
     telegram_chat_id: Optional[str] = Field(default=None)
     notify_email: bool = Field(default=True)
     notify_telegram: bool = Field(default=False)
+    # Trial balance (MVP)
+    balance: int = Field(default=0)
+    earnings: int = Field(default=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -63,6 +66,11 @@ class Booking(SQLModel, table=True):
     status: str = Field(default="confirmed", index=True)  # confirmed | cancelled | done
     reminder_sent: bool = Field(default=False, index=True)
     reminder_sent_at: Optional[datetime] = Field(default=None)
+
+    # Trial balance payment (no real payouts yet)
+    price: int = Field(default=0)
+    payment_status: str = Field(default='unpaid', index=True)  # unpaid | paid | refunded
+    paid_at: Optional[datetime] = Field(default=None)
 
 
 class Review(SQLModel, table=True):
@@ -274,3 +282,18 @@ class QuizAttempt(SQLModel, table=True):
     max_score: int = Field(default=0)
     answers_json: str = Field(default="[]")  # list[{question_id, answer}]
 
+
+
+# -----------------
+# Trial balance ledger
+# -----------------
+
+
+class BalanceTx(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    amount: int
+    kind: str = Field(default='topup', index=True)  # topup | pay | earn | adjust
+    booking_id: Optional[int] = Field(default=None, index=True)
+    note: str = Field(default='')
+    created_at: datetime = Field(default_factory=datetime.utcnow)

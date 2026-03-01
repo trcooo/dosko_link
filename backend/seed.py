@@ -102,6 +102,14 @@ def seed_demo(session: Session) -> None:
     tutor_users: List[User] = []
     for email, name, meta in tutors:
         u = upsert_user(email, "tutor")
+        # Ensure earnings field exists
+        try:
+            u.earnings = int(getattr(u, 'earnings', 0) or 0)
+            session.add(u)
+            session.commit()
+            session.refresh(u)
+        except Exception:
+            pass
         tutor_users.append(u)
 
         prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == u.id)).first()
@@ -141,6 +149,14 @@ def seed_demo(session: Session) -> None:
     student_users: List[User] = []
     for email, _name in students:
         u = upsert_user(email, "student")
+        # Give students some trial balance for demos
+        try:
+            u.balance = max(int(getattr(u, 'balance', 0) or 0), 5000)
+            session.add(u)
+            session.commit()
+            session.refresh(u)
+        except Exception:
+            pass
         student_users.append(u)
 
     # Slots for each tutor (only if no slots yet)
@@ -172,7 +188,8 @@ def seed_demo(session: Session) -> None:
             session.commit()
             session.refresh(slot)
 
-            b = Booking(slot_id=slot.id, tutor_user_id=tutor1.id, student_user_id=student1.id, status="confirmed")
+            # Create an UNPAID lesson so demos can test "Оплатить с баланса".
+            b = Booking(slot_id=slot.id, tutor_user_id=tutor1.id, student_user_id=student1.id, status="confirmed", price=1500, payment_status="unpaid")
             session.add(b)
             session.commit()
             session.refresh(b)
@@ -182,6 +199,12 @@ def seed_demo(session: Session) -> None:
         has_review = session.exec(select(Review.id).where(Review.tutor_user_id == tutor_u.id)).first() is not None
         if has_review:
             continue
+
+        prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == tutor_u.id)).first()
+        price = int(getattr(prof, 'price_per_hour', 0) or 0)
+        if price <= 0:
+            price = 1500
+
         # Create 2 reviews from different students (link to any existing booking or create dummy booking)
         for s_idx, stars, text in [(1, 5, "Отличный преподаватель, всё стало понятно!"), (2, 4, "Хороший урок, хотелось бы больше практики.")]:
             student = student_users[s_idx]
@@ -196,7 +219,8 @@ def seed_demo(session: Session) -> None:
                 session.add(slot)
                 session.commit()
                 session.refresh(slot)
-            b = Booking(slot_id=slot.id, tutor_user_id=tutor_u.id, student_user_id=student.id, status="done")
+
+            b = Booking(slot_id=slot.id, tutor_user_id=tutor_u.id, student_user_id=student.id, status="done", price=price, payment_status="paid")
             session.add(b)
             session.commit()
             session.refresh(b)
@@ -206,7 +230,6 @@ def seed_demo(session: Session) -> None:
             session.commit()
 
         # Update rating
-        prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == tutor_u.id)).first()
         if prof:
             rows = session.exec(select(Review).where(Review.tutor_user_id == tutor_u.id)).all()
             if rows:

@@ -91,7 +91,7 @@ export default function TutorProfile() {
 
         <div className="card" style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 800 }}>Стоимость</div>
-          <div className="small">{tutor.price_per_hour} / час (в MVP оплаты нет — оплата напрямую репетитору)</div>
+          <div className="small">{tutor.price_per_hour} ₽/час. В MVP есть пробный баланс: после брони можно «оплатить с баланса» (это тест, без реальных платежей).</div>
         </div>
 
         {tutor.video_url && (

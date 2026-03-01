@@ -10,10 +10,14 @@ import Dashboard from './pages/Dashboard'
 import Room from './pages/Room'
 import Learning from './pages/Learning'
 import Admin from './pages/Admin'
+import Wallet from './pages/Wallet'
 
 function NavBar() {
-  const { me, logout } = useAuth()
+  const { me, logout, balanceInfo } = useAuth()
   const nav = useNavigate()
+
+  const bal = Number(balanceInfo?.balance || 0)
+  const earn = Number(balanceInfo?.earnings || 0)
 
   return (
     <div className="nav">
@@ -30,6 +34,13 @@ function NavBar() {
           <Link className="btn btnGhost" to="/">Поиск</Link>
           {me && <Link className="btn btnGhost" to="/dashboard">Кабинет</Link>}
           {me && <Link className="btn btnGhost" to="/learning">Учёба</Link>}
+          {me && (
+            <Link className="btn btnGhost" to="/wallet">
+              Баланс
+              <span className="pill" style={{ marginLeft: 8 }}>{bal} ₽</span>
+              {me.role === 'tutor' ? <span className="pill" style={{ marginLeft: 6, opacity: .85 }}>+{earn} ₽</span> : null}
+            </Link>
+          )}
           {me && me.role === 'admin' && <Link className="btn btnGhost" to="/admin">Админ</Link>}
           {!me ? (
             <>
@@ -60,6 +71,7 @@ export default function App() {
           <Route path="/tutor/:id" element={<TutorProfile />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/learning" element={<Learning />} />
+          <Route path="/wallet" element={<Wallet />} />
           <Route path="/room/:roomId" element={<Room />} />
           <Route path="/admin" element={<Admin />} />
         </Routes>

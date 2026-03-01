@@ -160,3 +160,16 @@ export async function changePassword(token, oldPassword, newPassword) {
     body: { old_password: oldPassword, new_password: newPassword }
   })
 }
+
+
+export async function getBalance(token) {
+  return apiFetch('/api/balance', { token })
+}
+
+export async function topupBalance(token, amount) {
+  return apiFetch('/api/balance/topup', { method: 'POST', token, body: { amount } })
+}
+
+export async function payBooking(token, bookingId) {
+  return apiFetch(`/api/bookings/${bookingId}/pay`, { method: 'POST', token })
+}

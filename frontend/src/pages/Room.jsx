@@ -10,7 +10,7 @@ import ReviewModal from '../components/ReviewModal'
 
 export default function Room() {
   const { roomId } = useParams()
-  const { token, me } = useAuth()
+  const { token, me, balanceInfo, payBooking, refreshBalance } = useAuth()
   const nav = useNavigate()
 
   const [info, setInfo] = useState(null)
@@ -18,6 +18,7 @@ export default function Room() {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [paying, setPaying] = useState(false)
 
   const wbRef = useRef(null)
   const [artifacts, setArtifacts] = useState([])
@@ -29,6 +30,24 @@ export default function Room() {
 
   const [checkin, setCheckin] = useState(null)
   const [savingCheckin, setSavingCheckin] = useState(false)
+
+
+  async function doPay() {
+    if (!info?.booking?.id) return
+    setErr('')
+    setPaying(true)
+    try {
+      const res = await payBooking(info.booking.id)
+      // reload room info to update status
+      await loadInfo()
+      await refreshBalance?.()
+      return res
+    } catch (e) {
+      setErr(e.message || 'Ошибка оплаты')
+    } finally {
+      setPaying(false)
+    }
+  }
 
   async function loadInfo() {
     if (!token) return
@@ -317,6 +336,47 @@ export default function Room() {
           <div className="small">Комната остаётся доступной участникам, но созвон/доску лучше не использовать для отменённого слота.</div>
         </div>
       )}
+
+
+      <div className="card">
+        <div className="panelTitle">
+          <div style={{ fontWeight: 900 }}>Оплата занятия (пробно)</div>
+          <div className="small">Реальных платежей пока нет — это тестовый баланс для MVP.</div>
+        </div>
+
+        {info?.booking ? (
+          <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="kpi">
+              <div className="small">Стоимость</div>
+              <div style={{ fontWeight: 900, fontSize: 18 }}>{info.booking.price || 0} ₽</div>
+            </div>
+            <div className="kpi">
+              <div className="small">Статус</div>
+              <div style={{ fontWeight: 900, fontSize: 18 }}>{info.booking.payment_status || 'unpaid'}</div>
+            </div>
+            {me?.role === 'student' && (
+              <div className="kpi">
+                <div className="small">Ваш баланс</div>
+                <div style={{ fontWeight: 900, fontSize: 18 }}>{balanceInfo?.balance ?? '—'} ₽</div>
+              </div>
+            )}
+
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {me?.role === 'student' && (info.booking.payment_status !== 'paid') && (
+                <button className="btn btnPrimary" disabled={paying || !canUseLearning} onClick={doPay}>
+                  {paying ? 'Оплачиваем…' : 'Оплатить с баланса'}
+                </button>
+              )}
+              {info.booking.payment_status === 'paid' && (
+                <div className="small">Оплачено ✔</div>
+              )}
+              <Link className="btn" to="/wallet">Баланс</Link>
+            </div>
+          </div>
+        ) : (
+          <div className="small">Нет данных по бронированию.</div>
+        )}
+      </div>
 
       <div className="room">
         <div className="card">
