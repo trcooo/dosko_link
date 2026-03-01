@@ -14,7 +14,7 @@ COPY frontend/package*.json ./
 # We must explicitly include dev deps because Vite is in devDependencies.
 ENV NODE_ENV=development
 ENV NPM_CONFIG_PRODUCTION=false
-RUN npm ci --include=dev --no-audit --no-fund
+RUN npm ci --include=dev --omit=optional --no-audit --no-fund --production=false
 
 COPY frontend/ .
 RUN npm run build
