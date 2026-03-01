@@ -17,43 +17,33 @@ def _truthy(v: str | None) -> bool:
     return v.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _is_railway() -> bool:
+    return bool(os.getenv("RAILWAY_PROJECT_ID") or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
+
+
 def seed_demo(session: Session) -> None:
     """Create demo tutors/students/profiles/slots/bookings for MVP demos.
 
-    Controlled by env:
-      - DL_SEED_DEMO=true|1
-      - DL_DEMO_PASSWORD (default: DemoPass123!)
+    Controls:
+      - DL_SEED_DEMO=true|1   -> always seed (idempotent)
+      - DL_DEMO_PASSWORD      -> password for all demo accounts (default: DemoPass123!)
+      - DL_DEMO_RESET_PASSWORDS=true|1 -> reset demo passwords on each boot (default: true)
+      - DL_AUTO_SEED_IF_EMPTY=true|1   -> auto seed ONLY if DB has no users AND running on Railway (default: true)
     """
-    if not _truthy(os.getenv("DL_SEED_DEMO")):
+    demo_flag = _truthy(os.getenv("DL_SEED_DEMO"))
+    auto_if_empty = _truthy(os.getenv("DL_AUTO_SEED_IF_EMPTY") or "true") and _is_railway()
+    has_any_user = session.exec(select(User.id)).first() is not None
+
+    enabled = demo_flag or (auto_if_empty and not has_any_user)
+    if not enabled:
         return
 
-    demo_password = os.getenv("DL_DEMO_PASSWORD") or "DemoPass123!"
-    demo_password = str(demo_password)
+    demo_password = str(os.getenv("DL_DEMO_PASSWORD") or "DemoPass123!")
+    reset_pw = _truthy(os.getenv("DL_DEMO_RESET_PASSWORDS") or "true")
 
-# Optional demo admin account (handy for demos)
-admin_email = (os.getenv("DL_DEMO_ADMIN_EMAIL") or "admin@demo.dl").strip().lower()
-# Create or update admin
-u_admin = session.exec(select(User).where(User.email == admin_email)).first()
-if not u_admin:
-    u_admin = User(email=admin_email, password_hash=hash_password(demo_password), role="admin", is_active=True)
-    session.add(u_admin)
-    session.commit()
-    session.refresh(u_admin)
-else:
-    changed = False
-    if u_admin.role != "admin":
-        u_admin.role = "admin"
-        changed = True
-    if not u_admin.is_active:
-        u_admin.is_active = True
-        changed = True
-    if changed:
-        session.add(u_admin)
-        session.commit()
-        session.refresh(u_admin)
+    # Demo admin account (handy for demos)
+    demo_admin_email = (os.getenv("DL_DEMO_ADMIN_EMAIL") or "admin@demo.dl").strip().lower()
 
-    # If there are already some demo users, keep idempotent.
-    # We seed a small, deterministic set of accounts.
     tutors: List[Tuple[str, str, dict]] = [
         ("tutor1@demo.dl", "Анна И.", {"subjects": ["Математика"], "levels": ["5-11 класс"], "goals": ["ЕГЭ", "ОГЭ"], "price": 1500, "lang": "ru",
                                       "bio": "Подготовка к ЕГЭ/ОГЭ. Объясняю простым языком, много практики."}),
@@ -78,35 +68,42 @@ else:
         ("student6@demo.dl", "Виктория"),
     ]
 
-    def get_or_create_user(email: str, role: str) -> User:
+    def upsert_user(email: str, role: str) -> User:
         email_l = email.strip().lower()
         u = session.exec(select(User).where(User.email == email_l)).first()
-        if u:
-            # ensure role and active
-            changed = False
-            if u.role != role:
-                u.role = role
-                changed = True
-            if not u.is_active:
-                u.is_active = True
-                changed = True
-            if changed:
-                session.add(u)
-                session.commit()
-                session.refresh(u)
+        if not u:
+            u = User(email=email_l, password_hash=hash_password(demo_password), role=role, is_active=True)
+            session.add(u)
+            session.commit()
+            session.refresh(u)
             return u
-        u = User(email=email_l, password_hash=hash_password(demo_password), role=role, is_active=True)
-        session.add(u)
-        session.commit()
-        session.refresh(u)
+
+        changed = False
+        if u.role != role:
+            u.role = role
+            changed = True
+        if not u.is_active:
+            u.is_active = True
+            changed = True
+        if reset_pw:
+            u.password_hash = hash_password(demo_password)
+            changed = True
+
+        if changed:
+            session.add(u)
+            session.commit()
+            session.refresh(u)
         return u
 
+    # Admin
+    upsert_user(demo_admin_email, "admin")
+
+    # Tutors & profiles
     tutor_users: List[User] = []
     for email, name, meta in tutors:
-        u = get_or_create_user(email, "tutor")
+        u = upsert_user(email, "tutor")
         tutor_users.append(u)
 
-        # profile
         prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == u.id)).first()
         if not prof:
             prof = TutorProfile(
@@ -128,48 +125,46 @@ else:
             session.refresh(prof)
         else:
             # keep published for demo
+            updated = False
             if not prof.is_published:
                 prof.is_published = True
+                updated = True
+            if prof.display_name != name:
+                prof.display_name = name
+                updated = True
+            if updated:
+                prof.updated_at = datetime.utcnow()
                 session.add(prof)
                 session.commit()
 
+    # Students
     student_users: List[User] = []
     for email, _name in students:
-        u = get_or_create_user(email, "student")
+        u = upsert_user(email, "student")
         student_users.append(u)
 
-    # Seed slots (open) for each tutor if none exist.
+    # Slots for each tutor (only if no slots yet)
     now = datetime.utcnow()
     for i, tutor_u in enumerate(tutor_users):
-        existing = session.exec(select(Slot).where(Slot.tutor_user_id == tutor_u.id)).first()
-        if existing:
+        has_slot = session.exec(select(Slot.id).where(Slot.tutor_user_id == tutor_u.id)).first() is not None
+        if has_slot:
             continue
-
-        # Create 4 slots: today+1h, +3h, tomorrow, +2days
-        starts_list = [
-            now + timedelta(hours=1 + i),
-            now + timedelta(hours=3 + i),
-            now + timedelta(days=1, hours=2),
-            now + timedelta(days=2, hours=1),
-        ]
-        for s in starts_list:
-            slot = Slot(
-                tutor_user_id=tutor_u.id,
-                starts_at=s,
-                ends_at=s + timedelta(minutes=60),
-                status="open",
-            )
-            session.add(slot)
+        base = now + timedelta(hours=1 + i)
+        for k in range(4):
+            st = base + timedelta(hours=2 * k)
+            en = st + timedelta(minutes=60)
+            session.add(Slot(tutor_user_id=tutor_u.id, starts_at=st, ends_at=en, status="open"))
         session.commit()
 
-    # Seed one booking between first tutor and first student if no bookings exist.
-    any_booking = session.exec(select(Booking)).first()
-    if not any_booking and tutor_users and student_users:
-        tutor_u = tutor_users[0]
-        student_u = student_users[0]
-        # pick the earliest open slot for tutor
+    # One demo booking (tutor1 + student1) if none exist for those two
+    tutor1 = tutor_users[0]
+    student1 = student_users[0]
+    existing_booking = session.exec(
+        select(Booking.id).where(Booking.tutor_user_id == tutor1.id).where(Booking.student_user_id == student1.id)
+    ).first()
+    if not existing_booking:
         slot = session.exec(
-            select(Slot).where(Slot.tutor_user_id == tutor_u.id).where(Slot.status == "open").order_by(Slot.starts_at)
+            select(Slot).where(Slot.tutor_user_id == tutor1.id).where(Slot.status == "open").order_by(Slot.starts_at.asc())
         ).first()
         if slot:
             slot.status = "booked"
@@ -177,64 +172,51 @@ else:
             session.commit()
             session.refresh(slot)
 
-            booking = Booking(
-                slot_id=slot.id,
-                tutor_user_id=tutor_u.id,
-                student_user_id=student_u.id,
-                status="confirmed",
-            )
-            session.add(booking)
+            b = Booking(slot_id=slot.id, tutor_user_id=tutor1.id, student_user_id=student1.id, status="confirmed")
+            session.add(b)
             session.commit()
-            session.refresh(booking)
+            session.refresh(b)
 
-    # Seed a couple of reviews for visual ratings (optional, only if none exist).
-    existing_reviews = session.exec(select(Review)).first()
-    if not existing_reviews:
-        # create synthetic done bookings + reviews for each tutor
-        for i, tutor_u in enumerate(tutor_users):
-            # create a completed booking in the past
-            slot = Slot(
-                tutor_user_id=tutor_u.id,
-                starts_at=now - timedelta(days=7+i, hours=1),
-                ends_at=now - timedelta(days=7+i),
-                status="booked",
-            )
-            session.add(slot)
+    # Reviews (if none exist)
+    for tutor_u in tutor_users[:3]:
+        has_review = session.exec(select(Review.id).where(Review.tutor_user_id == tutor_u.id)).first() is not None
+        if has_review:
+            continue
+        # Create 2 reviews from different students (link to any existing booking or create dummy booking)
+        for s_idx, stars, text in [(1, 5, "Отличный преподаватель, всё стало понятно!"), (2, 4, "Хороший урок, хотелось бы больше практики.")]:
+            student = student_users[s_idx]
+            # create dummy booking with cancelled slot if needed
+            slot = session.exec(
+                select(Slot).where(Slot.tutor_user_id == tutor_u.id).order_by(Slot.starts_at.asc())
+            ).first()
+            if not slot:
+                st = now + timedelta(days=1, hours=2)
+                en = st + timedelta(minutes=60)
+                slot = Slot(tutor_user_id=tutor_u.id, starts_at=st, ends_at=en, status="booked")
+                session.add(slot)
+                session.commit()
+                session.refresh(slot)
+            b = Booking(slot_id=slot.id, tutor_user_id=tutor_u.id, student_user_id=student.id, status="done")
+            session.add(b)
             session.commit()
-            session.refresh(slot)
+            session.refresh(b)
 
-            student_u = student_users[i % len(student_users)]
-            booking = Booking(
-                slot_id=slot.id,
-                tutor_user_id=tutor_u.id,
-                student_user_id=student_u.id,
-                status="done",
-            )
-            session.add(booking)
-            session.commit()
-            session.refresh(booking)
-
-            stars = 5 if i % 3 != 0 else 4
-            review = Review(
-                booking_id=booking.id,
-                tutor_user_id=tutor_u.id,
-                student_user_id=student_u.id,
-                stars=stars,
-                text="Отличное занятие: понятно и структурно. Рекомендую!",
-            )
-            session.add(review)
+            r = Review(booking_id=b.id, tutor_user_id=tutor_u.id, student_user_id=student.id, stars=int(stars), text=text)
+            session.add(r)
             session.commit()
 
-        # Update rating aggregates
-        for tutor_u in tutor_users:
-            prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == tutor_u.id)).first()
-            if not prof:
-                continue
+        # Update rating
+        prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == tutor_u.id)).first()
+        if prof:
             rows = session.exec(select(Review).where(Review.tutor_user_id == tutor_u.id)).all()
             if rows:
                 prof.rating_count = len(rows)
-                prof.rating_avg = sum([r.stars for r in rows]) / len(rows)
-                session.add(prof)
-        session.commit()
+                prof.rating_avg = float(sum(int(x.stars) for x in rows)) / float(prof.rating_count)
+            else:
+                prof.rating_count = 0
+                prof.rating_avg = 0
+            prof.updated_at = datetime.utcnow()
+            session.add(prof)
+            session.commit()
 
-    print("[seed] demo data ensured. demo password:", demo_password)
+    print("[seed] demo accounts ready (emails: *@demo.dl)")

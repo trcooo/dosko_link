@@ -189,3 +189,10 @@ Variables:
 
 Админ:
 - `admin@demo.dl` (создаётся при `DL_SEED_DEMO=true`)
+
+
+## Demo accounts (seed)
+
+Set `DL_SEED_DEMO=true` to create demo tutors/students (`*@demo.dl`). Password: `DL_DEMO_PASSWORD` (default `DemoPass123!`).
+
+On Railway, if the database is empty, demo seed can run automatically (default) via `DL_AUTO_SEED_IF_EMPTY=true`.
