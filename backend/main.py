@@ -41,9 +41,15 @@ from models import (
     TopicProgress,
     TutorProfile,
     User,
+    StudyPlan,
+    PlanItem,
+    StudentLibraryItem,
+    Quiz,
+    QuizQuestion,
+    QuizAttempt,
 )
 
-app = FastAPI(title="DL MVP API", version="0.4.0")
+app = FastAPI(title="DL MVP API", version="0.6.0")
 
 # -----------------
 # CORS
@@ -648,6 +654,14 @@ def admin_overview(
     bookings = session.exec(select(Booking)).all()
     reviews = session.exec(select(Review)).all()
     open_reports = session.exec(select(IssueReport).where(IssueReport.status == "open")).all()
+    plans = session.exec(select(StudyPlan)).all()
+    plan_items = session.exec(select(PlanItem)).all()
+    hw = session.exec(select(Homework)).all()
+    topics = session.exec(select(TopicProgress)).all()
+    library_items = session.exec(select(StudentLibraryItem)).all()
+    quizzes = session.exec(select(Quiz)).all()
+    quiz_questions = session.exec(select(QuizQuestion)).all()
+    quiz_attempts = session.exec(select(QuizAttempt)).all()
 
     by_status = {"confirmed": 0, "cancelled": 0, "done": 0}
     for b in bookings:
@@ -666,6 +680,14 @@ def admin_overview(
         "bookings_done": by_status.get("done", 0),
         "reviews": len(reviews),
         "open_reports": len(open_reports),
+        "plans": len(plans),
+        "plan_items": len(plan_items),
+        "homework": len(hw),
+        "topics": len(topics),
+        "student_library_items": len(library_items),
+        "quizzes": len(quizzes),
+        "quiz_questions": len(quiz_questions),
+        "quiz_attempts": len(quiz_attempts),
     }
 # -----------------
 # Admin: bookings / reviews / reports
@@ -2351,6 +2373,1006 @@ def submit_checkin(
     session.commit()
     session.refresh(c)
     return _checkin_to_out(c, session)
+
+
+# -----------------
+# Learning plan (StudyPlan)
+# -----------------
+
+
+class PlanIn(BaseModel):
+    student_user_id: int
+    title: str = Field(default="", max_length=140)
+    goal: str = Field(default="", max_length=2000)
+    starts_at: Optional[datetime] = None
+    target_at: Optional[datetime] = None
+
+
+class PlanPatch(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=140)
+    goal: Optional[str] = Field(default=None, max_length=2000)
+    status: Optional[str] = None  # active|paused|completed
+    starts_at: Optional[datetime] = None
+    target_at: Optional[datetime] = None
+
+
+class PlanOut(BaseModel):
+    id: int
+    tutor_user_id: int
+    tutor_hint: str
+    student_user_id: int
+    student_hint: str
+    title: str
+    goal: str
+    status: str
+    starts_at: Optional[datetime]
+    target_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+
+def _plan_to_out(p: StudyPlan, session: Session) -> PlanOut:
+    tutor = session.get(User, p.tutor_user_id)
+    student = session.get(User, p.student_user_id)
+    return PlanOut(
+        id=p.id,
+        tutor_user_id=p.tutor_user_id,
+        tutor_hint=_mask_email(tutor.email if tutor else ""),
+        student_user_id=p.student_user_id,
+        student_hint=_mask_email(student.email if student else ""),
+        title=p.title,
+        goal=p.goal,
+        status=p.status,
+        starts_at=p.starts_at,
+        target_at=p.target_at,
+        created_at=p.created_at,
+        updated_at=p.updated_at,
+    )
+
+
+def _ensure_plan_access(plan: StudyPlan, user: User) -> None:
+    if user.role == "admin":
+        return
+    if user.role == "tutor" and plan.tutor_user_id != user.id:
+        raise HTTPException(403, "no access")
+    if user.role == "student" and plan.student_user_id != user.id:
+        raise HTTPException(403, "no access")
+
+
+@app.get("/api/plans", response_model=List[PlanOut])
+def list_plans(
+    student_user_id: Optional[int] = None,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    stmt = select(StudyPlan).order_by(StudyPlan.updated_at.desc())
+    if user.role == "tutor":
+        stmt = stmt.where(StudyPlan.tutor_user_id == user.id)
+        if student_user_id:
+            stmt = stmt.where(StudyPlan.student_user_id == student_user_id)
+    elif user.role == "student":
+        stmt = stmt.where(StudyPlan.student_user_id == user.id)
+    else:
+        if student_user_id:
+            stmt = stmt.where(StudyPlan.student_user_id == student_user_id)
+    rows = session.exec(stmt.limit(200)).all()
+    return [_plan_to_out(p, session) for p in rows]
+
+
+@app.post("/api/plans", response_model=PlanOut)
+def create_plan(
+    payload: PlanIn,
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    if user.role != "admin":
+        _require_tutor_student_relation(user.id, payload.student_user_id, session)
+    p = StudyPlan(
+        tutor_user_id=(user.id if user.role != "admin" else user.id),
+        student_user_id=payload.student_user_id,
+        title=(payload.title or "").strip()[:140],
+        goal=(payload.goal or "").strip()[:2000],
+        status="active",
+        starts_at=payload.starts_at,
+        target_at=payload.target_at,
+        updated_at=datetime.utcnow(),
+    )
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _plan_to_out(p, session)
+
+
+@app.patch("/api/plans/{plan_id}", response_model=PlanOut)
+def patch_plan(
+    plan_id: int,
+    payload: PlanPatch,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    p = session.get(StudyPlan, plan_id)
+    if not p:
+        raise HTTPException(404, "plan not found")
+    _ensure_plan_access(p, user)
+    if user.role == "student":
+        # Students can only mark plan as completed/paused? Keep simple: no edits.
+        raise HTTPException(403, "students cannot edit plan")
+
+    if payload.title is not None:
+        p.title = payload.title.strip()[:140]
+    if payload.goal is not None:
+        p.goal = payload.goal.strip()[:2000]
+    if payload.status is not None:
+        if payload.status not in {"active", "paused", "completed"}:
+            raise HTTPException(400, "bad status")
+        p.status = payload.status
+    if payload.starts_at is not None:
+        p.starts_at = payload.starts_at
+    if payload.target_at is not None:
+        p.target_at = payload.target_at
+    p.updated_at = datetime.utcnow()
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _plan_to_out(p, session)
+
+
+class PlanItemIn(BaseModel):
+    kind: str = Field(default="milestone")
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+    due_at: Optional[datetime] = None
+    status: str = Field(default="todo")
+    booking_id: Optional[int] = None
+
+
+class PlanItemPatch(BaseModel):
+    kind: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    due_at: Optional[datetime] = None
+    status: Optional[str] = None
+    order_index: Optional[int] = None
+    booking_id: Optional[int] = None
+
+
+class PlanItemOut(BaseModel):
+    id: int
+    plan_id: int
+    order_index: int
+    kind: str
+    title: str
+    description: str
+    due_at: Optional[datetime]
+    status: str
+    booking_id: Optional[int]
+    created_at: datetime
+    updated_at: datetime
+
+
+def _plan_item_to_out(i: PlanItem) -> PlanItemOut:
+    return PlanItemOut(
+        id=i.id,
+        plan_id=i.plan_id,
+        order_index=i.order_index,
+        kind=i.kind,
+        title=i.title,
+        description=i.description,
+        due_at=i.due_at,
+        status=i.status,
+        booking_id=i.booking_id,
+        created_at=i.created_at,
+        updated_at=i.updated_at,
+    )
+
+
+@app.get("/api/plans/{plan_id}/items", response_model=List[PlanItemOut])
+def list_plan_items(
+    plan_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    p = session.get(StudyPlan, plan_id)
+    if not p:
+        raise HTTPException(404, "plan not found")
+    _ensure_plan_access(p, user)
+    rows = session.exec(
+        select(PlanItem)
+        .where(PlanItem.plan_id == plan_id)
+        .order_by(PlanItem.order_index.asc(), PlanItem.updated_at.desc())
+    ).all()
+    return [_plan_item_to_out(x) for x in rows]
+
+
+@app.post("/api/plans/{plan_id}/items", response_model=PlanItemOut)
+def create_plan_item(
+    plan_id: int,
+    payload: PlanItemIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    p = session.get(StudyPlan, plan_id)
+    if not p:
+        raise HTTPException(404, "plan not found")
+    _ensure_plan_access(p, user)
+    if user.role == "student":
+        raise HTTPException(403, "students cannot create items")
+    if payload.kind not in {"lesson", "milestone", "task"}:
+        raise HTTPException(400, "bad kind")
+    if payload.status not in {"todo", "in_progress", "done"}:
+        raise HTTPException(400, "bad status")
+
+    # Compute order_index as max + 1
+    max_idx = session.exec(select(PlanItem.order_index).where(PlanItem.plan_id == plan_id).order_by(PlanItem.order_index.desc())).first()
+    next_idx = int(max_idx or 0) + 1
+    it = PlanItem(
+        plan_id=plan_id,
+        order_index=next_idx,
+        kind=payload.kind,
+        title=payload.title.strip()[:160],
+        description=(payload.description or "").strip()[:2000],
+        due_at=payload.due_at,
+        status=payload.status,
+        booking_id=payload.booking_id,
+        updated_at=datetime.utcnow(),
+    )
+    session.add(it)
+    p.updated_at = datetime.utcnow()
+    session.add(p)
+    session.commit()
+    session.refresh(it)
+    return _plan_item_to_out(it)
+
+
+@app.patch("/api/plan-items/{item_id}", response_model=PlanItemOut)
+def patch_plan_item(
+    item_id: int,
+    payload: PlanItemPatch,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    it = session.get(PlanItem, item_id)
+    if not it:
+        raise HTTPException(404, "item not found")
+    p = session.get(StudyPlan, it.plan_id)
+    if not p:
+        raise HTTPException(404, "plan not found")
+    _ensure_plan_access(p, user)
+
+    # Students can only update status.
+    if user.role == "student":
+        if payload.status is None:
+            raise HTTPException(403, "students can only update status")
+        if payload.status not in {"todo", "in_progress", "done"}:
+            raise HTTPException(400, "bad status")
+        it.status = payload.status
+    else:
+        if payload.kind is not None:
+            if payload.kind not in {"lesson", "milestone", "task"}:
+                raise HTTPException(400, "bad kind")
+            it.kind = payload.kind
+        if payload.title is not None:
+            it.title = payload.title.strip()[:160]
+        if payload.description is not None:
+            it.description = (payload.description or "").strip()[:2000]
+        if payload.due_at is not None:
+            it.due_at = payload.due_at
+        if payload.status is not None:
+            if payload.status not in {"todo", "in_progress", "done"}:
+                raise HTTPException(400, "bad status")
+            it.status = payload.status
+        if payload.order_index is not None:
+            it.order_index = int(payload.order_index)
+        if payload.booking_id is not None:
+            it.booking_id = payload.booking_id
+
+    it.updated_at = datetime.utcnow()
+    p.updated_at = datetime.utcnow()
+    session.add(it)
+    session.add(p)
+    session.commit()
+    session.refresh(it)
+    return _plan_item_to_out(it)
+
+
+@app.delete("/api/plan-items/{item_id}")
+def delete_plan_item(
+    item_id: int,
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    it = session.get(PlanItem, item_id)
+    if not it:
+        raise HTTPException(404, "item not found")
+    p = session.get(StudyPlan, it.plan_id)
+    if not p:
+        raise HTTPException(404, "plan not found")
+    _ensure_plan_access(p, user)
+    session.delete(it)
+    p.updated_at = datetime.utcnow()
+    session.add(p)
+    session.commit()
+    return {"ok": True}
+
+
+# -----------------
+# Student library (files/links/notes)
+# -----------------
+
+
+class LibraryCreateIn(BaseModel):
+    title: str = Field(default="", max_length=160)
+    kind: str = Field(default="link")  # link | note
+    url: str = Field(default="", max_length=2000)  # for link
+    note: str = Field(default="", max_length=4000)  # for note
+    tags: List[str] = Field(default_factory=list)
+
+
+class LibraryOut(BaseModel):
+    id: int
+    tutor_user_id: int
+    student_user_id: int
+    uploader_user_id: int
+    uploader_hint: str
+    title: str
+    kind: str
+    url: str
+    tags: List[str]
+    name: str
+    mime: str
+    size_bytes: int
+    created_at: datetime
+    preview: str
+
+
+def _lib_to_out(x: StudentLibraryItem, session: Session) -> LibraryOut:
+    up = session.get(User, x.uploader_user_id)
+    try:
+        tags = list(json.loads(x.tags_json or "[]"))
+    except Exception:
+        tags = []
+    preview = ""
+    if x.kind == "file":
+        preview = f"{x.name} ({x.size_bytes} bytes)"
+    elif x.kind == "link":
+        preview = (x.url or "")[:120]
+    else:
+        preview = (x.url or "")[:160]
+    return LibraryOut(
+        id=x.id,
+        tutor_user_id=x.tutor_user_id,
+        student_user_id=x.student_user_id,
+        uploader_user_id=x.uploader_user_id,
+        uploader_hint=_mask_email(up.email if up else ""),
+        title=x.title,
+        kind=x.kind,
+        url=x.url,
+        tags=[str(t) for t in tags],
+        name=x.name,
+        mime=x.mime,
+        size_bytes=x.size_bytes,
+        created_at=x.created_at,
+        preview=preview,
+    )
+
+
+def _ensure_library_access(tutor_id: int, student_id: int, user: User, session: Session) -> Tuple[int, int]:
+    """Return (tutor_user_id, student_user_id) after validating access."""
+    if user.role == "admin":
+        return tutor_id, student_id
+    if user.role == "student":
+        if user.id != student_id:
+            raise HTTPException(403, "no access")
+        # Determine tutor_id as the last tutor who taught the student (best-effort)
+        b = session.exec(
+            select(Booking)
+            .where(Booking.student_user_id == student_id)
+            .order_by(Booking.created_at.desc())
+            .limit(1)
+        ).first()
+        return (b.tutor_user_id if b else 0), student_id
+    # tutor
+    if tutor_id and tutor_id != user.id:
+        raise HTTPException(403, "no access")
+    _require_tutor_student_relation(user.id, student_id, session)
+    return user.id, student_id
+
+
+@app.get("/api/students/{student_id}/library", response_model=List[LibraryOut])
+def list_student_library(
+    student_id: int,
+    tutor_user_id: int = 0,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    tid, sid = _ensure_library_access(tutor_user_id, student_id, user, session)
+    stmt = select(StudentLibraryItem).where(StudentLibraryItem.student_user_id == sid)
+    if tid:
+        stmt = stmt.where(StudentLibraryItem.tutor_user_id == tid)
+    rows = session.exec(stmt.order_by(StudentLibraryItem.created_at.desc()).limit(200)).all()
+    return [_lib_to_out(x, session) for x in rows]
+
+
+@app.post("/api/students/{student_id}/library", response_model=LibraryOut)
+def create_library_link_or_note(
+    student_id: int,
+    payload: LibraryCreateIn,
+    tutor_user_id: int = 0,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    tid, sid = _ensure_library_access(tutor_user_id, student_id, user, session)
+    kind = (payload.kind or "link").strip().lower()
+    if kind not in {"link", "note"}:
+        raise HTTPException(400, "bad kind")
+    title = (payload.title or "").strip()[:160]
+    tags = [str(t).strip()[:40] for t in (payload.tags or []) if str(t).strip()]
+    tags = tags[:20]
+
+    url = ""
+    if kind == "link":
+        url = (payload.url or "").strip()[:2000]
+        if not url:
+            raise HTTPException(400, "url required")
+    else:
+        url = (payload.note or "").strip()[:4000]
+        if not url:
+            raise HTTPException(400, "note required")
+
+    row = StudentLibraryItem(
+        tutor_user_id=tid,
+        student_user_id=sid,
+        uploader_user_id=user.id,
+        title=title,
+        tags_json=json.dumps(tags, ensure_ascii=False),
+        kind=kind,
+        url=url,
+        name=("link" if kind == "link" else "note"),
+        mime=("text/plain" if kind == "note" else "text/uri-list"),
+        size_bytes=len(url.encode("utf-8")),
+        data=b"",
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return _lib_to_out(row, session)
+
+
+@app.post("/api/students/{student_id}/library/upload", response_model=LibraryOut)
+async def upload_library_file(
+    student_id: int,
+    file: UploadFile = File(...),
+    title: str = "",
+    tags: str = "",  # comma-separated
+    tutor_user_id: int = 0,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    tid, sid = _ensure_library_access(tutor_user_id, student_id, user, session)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty file")
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, "file too large (max 10MB in MVP)")
+    name = (file.filename or "file").strip()[:180]
+    mime = (file.content_type or "application/octet-stream").strip()[:120]
+    title_v = (title or name).strip()[:160]
+    tag_list = [t.strip()[:40] for t in (tags or "").split(",") if t.strip()][:20]
+
+    row = StudentLibraryItem(
+        tutor_user_id=tid,
+        student_user_id=sid,
+        uploader_user_id=user.id,
+        title=title_v,
+        tags_json=json.dumps(tag_list, ensure_ascii=False),
+        kind="file",
+        url="",
+        name=name,
+        mime=mime,
+        size_bytes=len(data),
+        data=data,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return _lib_to_out(row, session)
+
+
+@app.get("/api/library/{item_id}")
+def download_library_item(
+    item_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    row = session.get(StudentLibraryItem, item_id)
+    if not row:
+        raise HTTPException(404, "item not found")
+    # Access rules:
+    if user.role == "admin":
+        pass
+    elif user.role == "tutor":
+        if row.tutor_user_id != user.id:
+            raise HTTPException(403, "no access")
+    else:
+        if row.student_user_id != user.id:
+            raise HTTPException(403, "no access")
+    if row.kind != "file":
+        # Return json for link/note
+        return {
+            "id": row.id,
+            "kind": row.kind,
+            "title": row.title,
+            "value": row.url,
+        }
+    safe = "".join([c for c in (row.name or "file") if c.isalnum() or c in " ._-()"])
+    if not safe:
+        safe = "file"
+    headers = {"Content-Disposition": f'attachment; filename="{safe}"'}
+    return Response(content=row.data, media_type=row.mime, headers=headers)
+
+
+# -----------------
+# Quizzes (templates + attempts with auto-check)
+# -----------------
+
+
+class QuizIn(BaseModel):
+    student_user_id: int
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+
+
+class QuizPatch(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    status: Optional[str] = None  # draft|published|closed
+
+
+class QuizOut(BaseModel):
+    id: int
+    tutor_user_id: int
+    tutor_hint: str
+    student_user_id: int
+    student_hint: str
+    title: str
+    description: str
+    status: str
+    questions_count: int
+    attempts_count: int
+    updated_at: datetime
+    created_at: datetime
+
+
+def _quiz_to_out(q: Quiz, session: Session) -> QuizOut:
+    tutor = session.get(User, q.tutor_user_id)
+    student = session.get(User, q.student_user_id)
+    qc = session.exec(select(QuizQuestion).where(QuizQuestion.quiz_id == q.id)).all()
+    ac = session.exec(select(QuizAttempt).where(QuizAttempt.quiz_id == q.id)).all()
+    return QuizOut(
+        id=q.id,
+        tutor_user_id=q.tutor_user_id,
+        tutor_hint=_mask_email(tutor.email if tutor else ""),
+        student_user_id=q.student_user_id,
+        student_hint=_mask_email(student.email if student else ""),
+        title=q.title,
+        description=q.description,
+        status=q.status,
+        questions_count=len(qc),
+        attempts_count=len(ac),
+        updated_at=q.updated_at,
+        created_at=q.created_at,
+    )
+
+
+def _ensure_quiz_access(q: Quiz, user: User) -> None:
+    if user.role == "admin":
+        return
+    if user.role == "tutor" and q.tutor_user_id != user.id:
+        raise HTTPException(403, "no access")
+    if user.role == "student" and q.student_user_id != user.id:
+        raise HTTPException(403, "no access")
+
+
+@app.get("/api/quizzes", response_model=List[QuizOut])
+def list_quizzes(
+    student_user_id: Optional[int] = None,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    stmt = select(Quiz).order_by(Quiz.updated_at.desc())
+    if user.role == "tutor":
+        stmt = stmt.where(Quiz.tutor_user_id == user.id)
+        if student_user_id:
+            stmt = stmt.where(Quiz.student_user_id == student_user_id)
+    elif user.role == "student":
+        stmt = stmt.where(Quiz.student_user_id == user.id).where(Quiz.status != "draft")
+    rows = session.exec(stmt.limit(200)).all()
+    return [_quiz_to_out(x, session) for x in rows]
+
+
+@app.post("/api/quizzes", response_model=QuizOut)
+def create_quiz(
+    payload: QuizIn,
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    if user.role != "admin":
+        _require_tutor_student_relation(user.id, payload.student_user_id, session)
+    q = Quiz(
+        tutor_user_id=user.id,
+        student_user_id=payload.student_user_id,
+        title=payload.title.strip()[:160],
+        description=(payload.description or "").strip()[:2000],
+        status="draft",
+        updated_at=datetime.utcnow(),
+    )
+    session.add(q)
+    session.commit()
+    session.refresh(q)
+    return _quiz_to_out(q, session)
+
+
+@app.patch("/api/quizzes/{quiz_id}", response_model=QuizOut)
+def patch_quiz(
+    quiz_id: int,
+    payload: QuizPatch,
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    q = session.get(Quiz, quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    _ensure_quiz_access(q, user)
+    if payload.title is not None:
+        q.title = payload.title.strip()[:160]
+    if payload.description is not None:
+        q.description = (payload.description or "").strip()[:2000]
+    if payload.status is not None:
+        if payload.status not in {"draft", "published", "closed"}:
+            raise HTTPException(400, "bad status")
+        q.status = payload.status
+    q.updated_at = datetime.utcnow()
+    session.add(q)
+    session.commit()
+    session.refresh(q)
+    return _quiz_to_out(q, session)
+
+
+class QuizQuestionIn(BaseModel):
+    kind: str = Field(default="mcq")  # mcq|short
+    prompt: str = Field(min_length=1, max_length=1200)
+    options: List[str] = Field(default_factory=list)
+    correct_index: Optional[int] = None
+    accepted_answers: List[str] = Field(default_factory=list)
+    points: int = Field(default=1, ge=1, le=20)
+
+
+class QuizQuestionOut(BaseModel):
+    id: int
+    quiz_id: int
+    kind: str
+    prompt: str
+    options: List[str]
+    points: int
+    order_index: int
+
+
+def _qq_to_out(q: QuizQuestion) -> QuizQuestionOut:
+    try:
+        opts = list(json.loads(q.options_json or "[]"))
+    except Exception:
+        opts = []
+    return QuizQuestionOut(
+        id=q.id,
+        quiz_id=q.quiz_id,
+        kind=q.kind,
+        prompt=q.prompt,
+        options=[str(x) for x in opts],
+        points=q.points,
+        order_index=q.order_index,
+    )
+
+
+@app.get("/api/quizzes/{quiz_id}/questions", response_model=List[QuizQuestionOut])
+def list_quiz_questions(
+    quiz_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    q = session.get(Quiz, quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    _ensure_quiz_access(q, user)
+    if user.role == "student" and q.status != "published":
+        raise HTTPException(403, "quiz not published")
+    rows = session.exec(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.order_index.asc())).all()
+    return [_qq_to_out(x) for x in rows]
+
+
+@app.post("/api/quizzes/{quiz_id}/questions", response_model=List[QuizQuestionOut])
+def add_quiz_question(
+    quiz_id: int,
+    payload: QuizQuestionIn,
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    q = session.get(Quiz, quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    _ensure_quiz_access(q, user)
+    if q.status == "closed":
+        raise HTTPException(400, "quiz is closed")
+
+    kind = (payload.kind or "mcq").strip()
+    if kind not in {"mcq", "short"}:
+        raise HTTPException(400, "bad kind")
+    opts = [str(x)[:240] for x in (payload.options or []) if str(x).strip()][:10]
+
+    correct = {}
+    if kind == "mcq":
+        if payload.correct_index is None:
+            raise HTTPException(400, "correct_index required")
+        if payload.correct_index < 0 or payload.correct_index >= max(1, len(opts)):
+            raise HTTPException(400, "correct_index out of range")
+        correct = {"index": int(payload.correct_index)}
+    else:
+        answers = [str(a).strip()[:120] for a in (payload.accepted_answers or []) if str(a).strip()]
+        answers = answers[:10]
+        if not answers:
+            raise HTTPException(400, "accepted_answers required")
+        correct = {"answers": answers}
+
+    max_idx = session.exec(select(QuizQuestion.order_index).where(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.order_index.desc())).first()
+    next_idx = int(max_idx or 0) + 1
+    qq = QuizQuestion(
+        quiz_id=quiz_id,
+        kind=kind,
+        prompt=payload.prompt.strip()[:1200],
+        options_json=json.dumps(opts, ensure_ascii=False),
+        correct_json=json.dumps(correct, ensure_ascii=False),
+        points=int(payload.points),
+        order_index=next_idx,
+    )
+    session.add(qq)
+    q.updated_at = datetime.utcnow()
+    session.add(q)
+    session.commit()
+    rows = session.exec(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.order_index.asc())).all()
+    return [_qq_to_out(x) for x in rows]
+
+
+class QuizQuestionPatch(BaseModel):
+    prompt: Optional[str] = Field(default=None, max_length=1200)
+    options: Optional[List[str]] = None
+    correct_index: Optional[int] = None
+    accepted_answers: Optional[List[str]] = None
+    points: Optional[int] = Field(default=None, ge=1, le=20)
+    order_index: Optional[int] = None
+
+
+@app.patch("/api/quiz-questions/{question_id}", response_model=QuizQuestionOut)
+def patch_quiz_question(
+    question_id: int,
+    payload: QuizQuestionPatch,
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    qq = session.get(QuizQuestion, question_id)
+    if not qq:
+        raise HTTPException(404, "question not found")
+    q = session.get(Quiz, qq.quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    _ensure_quiz_access(q, user)
+    if q.status == "closed":
+        raise HTTPException(400, "quiz is closed")
+
+    if payload.prompt is not None:
+        qq.prompt = payload.prompt.strip()[:1200]
+    if payload.points is not None:
+        qq.points = int(payload.points)
+    if payload.order_index is not None:
+        qq.order_index = int(payload.order_index)
+
+    # Correct/Options update
+    if qq.kind == "mcq":
+        if payload.options is not None:
+            opts = [str(x)[:240] for x in (payload.options or []) if str(x).strip()][:10]
+            qq.options_json = json.dumps(opts, ensure_ascii=False)
+        if payload.correct_index is not None:
+            correct = {"index": int(payload.correct_index)}
+            qq.correct_json = json.dumps(correct, ensure_ascii=False)
+    else:
+        if payload.accepted_answers is not None:
+            answers = [str(a).strip()[:120] for a in (payload.accepted_answers or []) if str(a).strip()][:10]
+            correct = {"answers": answers}
+            qq.correct_json = json.dumps(correct, ensure_ascii=False)
+
+    session.add(qq)
+    q.updated_at = datetime.utcnow()
+    session.add(q)
+    session.commit()
+    session.refresh(qq)
+    return _qq_to_out(qq)
+
+
+@app.delete("/api/quiz-questions/{question_id}")
+def delete_quiz_question(
+    question_id: int,
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    qq = session.get(QuizQuestion, question_id)
+    if not qq:
+        raise HTTPException(404, "question not found")
+    q = session.get(Quiz, qq.quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    _ensure_quiz_access(q, user)
+    if q.status == "closed":
+        raise HTTPException(400, "quiz is closed")
+    session.delete(qq)
+    q.updated_at = datetime.utcnow()
+    session.add(q)
+    session.commit()
+    return {"ok": True}
+
+
+class AttemptStartOut(BaseModel):
+    attempt_id: int
+    quiz: QuizOut
+    questions: List[QuizQuestionOut]
+
+
+@app.post("/api/quizzes/{quiz_id}/attempts/start", response_model=AttemptStartOut)
+def start_attempt(
+    quiz_id: int,
+    user: User = Depends(require_role("student", "admin")),
+    session: Session = Depends(get_session),
+):
+    q = session.get(Quiz, quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    if user.role != "admin":
+        _ensure_quiz_access(q, user)
+        if q.status != "published":
+            raise HTTPException(400, "quiz not available")
+    qs = session.exec(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.order_index.asc())).all()
+    if not qs:
+        raise HTTPException(400, "no questions")
+    at = QuizAttempt(
+        quiz_id=quiz_id,
+        tutor_user_id=q.tutor_user_id,
+        student_user_id=(q.student_user_id if user.role != "admin" else q.student_user_id),
+        started_at=datetime.utcnow(),
+        max_score=sum(int(x.points or 1) for x in qs),
+        score=0,
+        answers_json="[]",
+    )
+    session.add(at)
+    session.commit()
+    session.refresh(at)
+    return AttemptStartOut(attempt_id=at.id, quiz=_quiz_to_out(q, session), questions=[_qq_to_out(x) for x in qs])
+
+
+class AttemptSubmitIn(BaseModel):
+    answers: List[dict] = Field(default_factory=list)  # [{question_id, answer}]
+
+
+class AttemptOut(BaseModel):
+    id: int
+    quiz_id: int
+    student_user_id: int
+    started_at: datetime
+    submitted_at: Optional[datetime]
+    score: int
+    max_score: int
+    answers: List[dict]
+
+
+def _attempt_to_out(a: QuizAttempt) -> AttemptOut:
+    try:
+        ans = list(json.loads(a.answers_json or "[]"))
+    except Exception:
+        ans = []
+    return AttemptOut(
+        id=a.id,
+        quiz_id=a.quiz_id,
+        student_user_id=a.student_user_id,
+        started_at=a.started_at,
+        submitted_at=a.submitted_at,
+        score=a.score,
+        max_score=a.max_score,
+        answers=ans,
+    )
+
+
+def _normalize(s: str) -> str:
+    return " ".join((s or "").strip().lower().split())
+
+
+@app.post("/api/attempts/{attempt_id}/submit", response_model=AttemptOut)
+def submit_attempt(
+    attempt_id: int,
+    payload: AttemptSubmitIn,
+    user: User = Depends(require_role("student", "admin")),
+    session: Session = Depends(get_session),
+):
+    at = session.get(QuizAttempt, attempt_id)
+    if not at:
+        raise HTTPException(404, "attempt not found")
+    q = session.get(Quiz, at.quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    if user.role != "admin" and at.student_user_id != user.id:
+        raise HTTPException(403, "no access")
+    if at.submitted_at is not None:
+        return _attempt_to_out(at)
+
+    qs = session.exec(select(QuizQuestion).where(QuizQuestion.quiz_id == at.quiz_id)).all()
+    qmap = {x.id: x for x in qs if x and x.id}
+    answers = payload.answers or []
+
+    score = 0
+    max_score = sum(int(x.points or 1) for x in qs)
+    graded_answers = []
+    for item in answers:
+        try:
+            qid = int(item.get("question_id"))
+        except Exception:
+            continue
+        if qid not in qmap:
+            continue
+        qq = qmap[qid]
+        ans_val = item.get("answer")
+        ok = False
+        if qq.kind == "mcq":
+            try:
+                correct = json.loads(qq.correct_json or "{}")
+            except Exception:
+                correct = {}
+            cidx = int(correct.get("index") or 0)
+            try:
+                aidx = int(ans_val)
+            except Exception:
+                aidx = -1
+            ok = aidx == cidx
+        else:
+            try:
+                correct = json.loads(qq.correct_json or "{}")
+            except Exception:
+                correct = {}
+            accepted = [ _normalize(x) for x in (correct.get("answers") or []) ]
+            ok = _normalize(str(ans_val or "")) in set(accepted)
+        if ok:
+            score += int(qq.points or 1)
+        graded_answers.append({"question_id": qid, "answer": ans_val, "ok": ok, "points": int(qq.points or 1)})
+
+    at.score = int(score)
+    at.max_score = int(max_score)
+    at.answers_json = json.dumps(graded_answers, ensure_ascii=False)
+    at.submitted_at = datetime.utcnow()
+    session.add(at)
+    session.commit()
+    session.refresh(at)
+    return _attempt_to_out(at)
+
+
+@app.get("/api/quizzes/{quiz_id}/attempts", response_model=List[AttemptOut])
+def list_attempts(
+    quiz_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    q = session.get(Quiz, quiz_id)
+    if not q:
+        raise HTTPException(404, "quiz not found")
+    _ensure_quiz_access(q, user)
+    stmt = select(QuizAttempt).where(QuizAttempt.quiz_id == quiz_id).order_by(QuizAttempt.started_at.desc()).limit(200)
+    if user.role == "student":
+        stmt = stmt.where(QuizAttempt.student_user_id == user.id)
+    rows = session.exec(stmt).all()
+    return [_attempt_to_out(x) for x in rows]
 
 
 class WSManager:

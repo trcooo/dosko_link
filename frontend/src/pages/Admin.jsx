@@ -213,6 +213,14 @@ export default function Admin() {
               <div className="small">Bookings done: {overview.bookings_done}</div>
               <div className="small">Reviews: {overview.reviews}</div>
               <div className="small">Open reports: {overview.open_reports}</div>
+              <div className="small">Plans: {overview.plans}</div>
+              <div className="small">Plan items: {overview.plan_items}</div>
+              <div className="small">Homework: {overview.homework}</div>
+              <div className="small">Topics: {overview.topics}</div>
+              <div className="small">Student library: {overview.student_library_items}</div>
+              <div className="small">Quizzes: {overview.quizzes}</div>
+              <div className="small">Quiz questions: {overview.quiz_questions}</div>
+              <div className="small">Quiz attempts: {overview.quiz_attempts}</div>
             </div>
           </div>
 

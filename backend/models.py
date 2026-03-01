@@ -169,3 +169,108 @@ class IssueReport(SQLModel, table=True):
     status: str = Field(default="open", index=True)  # open | resolved
     resolved_by_user_id: Optional[int] = Field(default=None, index=True)
     resolved_at: Optional[datetime] = Field(default=None)
+
+
+# -----------------
+# Learning Plan / Student Library / Quizzes
+# -----------------
+
+
+class StudyPlan(SQLModel, table=True):
+    """A lightweight learning plan for a tutor-student pair."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True)
+    student_user_id: int = Field(index=True)
+
+    title: str = Field(default="", index=True)
+    goal: str = Field(default="")
+    status: str = Field(default="active", index=True)  # active | paused | completed
+
+    starts_at: Optional[datetime] = Field(default=None, index=True)
+    target_at: Optional[datetime] = Field(default=None, index=True)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class PlanItem(SQLModel, table=True):
+    """An item inside a StudyPlan: lesson, milestone, homework task, etc."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    plan_id: int = Field(index=True)
+
+    order_index: int = Field(default=0, index=True)
+    kind: str = Field(default="milestone", index=True)  # lesson | milestone | task
+
+    title: str = Field(default="", index=True)
+    description: str = Field(default="")
+    due_at: Optional[datetime] = Field(default=None, index=True)
+    status: str = Field(default="todo", index=True)  # todo | in_progress | done
+    booking_id: Optional[int] = Field(default=None, index=True)  # optional link to a lesson
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class StudentLibraryItem(SQLModel, table=True):
+    """Files and links attached to a student (not tied to a booking)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True)
+    student_user_id: int = Field(index=True)
+    uploader_user_id: int = Field(index=True)
+
+    title: str = Field(default="")
+    tags_json: str = Field(default="[]")
+
+    kind: str = Field(default="file", index=True)  # file | link | note
+    url: str = Field(default="")  # used when kind == link
+
+    name: str = Field(default="file")
+    mime: str = Field(default="application/octet-stream")
+    size_bytes: int = Field(default=0)
+    data: bytes = Field(default=b"")  # used when kind == file
+
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class Quiz(SQLModel, table=True):
+    """A quiz created by a tutor for a student."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True)
+    student_user_id: int = Field(index=True)
+
+    title: str = Field(index=True)
+    description: str = Field(default="")
+    status: str = Field(default="draft", index=True)  # draft | published | closed
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class QuizQuestion(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    quiz_id: int = Field(index=True)
+    kind: str = Field(default="mcq", index=True)  # mcq | short
+    prompt: str = Field(default="")
+    options_json: str = Field(default="[]")  # for mcq
+    correct_json: str = Field(default="{}")  # {"index": 0} or {"answers": ["..."]}
+    points: int = Field(default=1)
+    order_index: int = Field(default=0, index=True)
+
+
+class QuizAttempt(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    quiz_id: int = Field(index=True)
+    tutor_user_id: int = Field(index=True)
+    student_user_id: int = Field(index=True)
+
+    started_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    submitted_at: Optional[datetime] = Field(default=None, index=True)
+
+    score: int = Field(default=0)
+    max_score: int = Field(default=0)
+    answers_json: str = Field(default="[]")  # list[{question_id, answer}]
+

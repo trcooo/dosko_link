@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
-import { apiFetch, apiUrl } from '../api'
+import { apiFetch, apiUpload, apiUrl } from '../api'
 
 function fmt(dt) {
   if (!dt) return ''
@@ -20,6 +20,52 @@ export default function Learning() {
   const [homework, setHomework] = useState([])
   const [progress, setProgress] = useState([])
   const [materials, setMaterials] = useState([])
+
+  // Plans
+  const [plans, setPlans] = useState([])
+  const [planItems, setPlanItems] = useState([])
+  const [planStudentId, setPlanStudentId] = useState('')
+  const [selectedPlanId, setSelectedPlanId] = useState('')
+  const [planTitle, setPlanTitle] = useState('')
+  const [planGoal, setPlanGoal] = useState('')
+  const [itemTitle, setItemTitle] = useState('')
+  const [itemKind, setItemKind] = useState('milestone')
+  const [itemStatus, setItemStatus] = useState('todo')
+  const [itemDue, setItemDue] = useState('')
+  const [itemDesc, setItemDesc] = useState('')
+
+  // Student library
+  const [library, setLibrary] = useState([])
+  const [libStudentId, setLibStudentId] = useState('')
+  const [libLinkTitle, setLibLinkTitle] = useState('')
+  const [libLinkUrl, setLibLinkUrl] = useState('')
+  const [libNoteTitle, setLibNoteTitle] = useState('')
+  const [libNoteText, setLibNoteText] = useState('')
+  const [libTags, setLibTags] = useState('')
+  const [libFileTitle, setLibFileTitle] = useState('')
+  const [libFileTags, setLibFileTags] = useState('')
+  const [libFile, setLibFile] = useState(null)
+
+  // Quizzes
+  const [quizzes, setQuizzes] = useState([])
+  const [quizStudentId, setQuizStudentId] = useState('')
+  const [quizTitle, setQuizTitle] = useState('')
+  const [quizDesc, setQuizDesc] = useState('')
+  const [selectedQuizId, setSelectedQuizId] = useState('')
+  const [quizQuestions, setQuizQuestions] = useState([])
+  const [quizAttempts, setQuizAttempts] = useState([])
+
+  const [qKind, setQKind] = useState('mcq')
+  const [qPrompt, setQPrompt] = useState('')
+  const [qOptions, setQOptions] = useState('')
+  const [qCorrectIndex, setQCorrectIndex] = useState('0')
+  const [qAccepted, setQAccepted] = useState('')
+  const [qPoints, setQPoints] = useState('1')
+
+  // Student attempt UI
+  const [activeAttempt, setActiveAttempt] = useState(null)
+  const [attemptAnswers, setAttemptAnswers] = useState({})
+  const [attemptResult, setAttemptResult] = useState(null)
 
   // Create homework (tutor)
   const [hwStudentId, setHwStudentId] = useState('')
@@ -49,9 +95,308 @@ export default function Learning() {
         setStudents(Array.isArray(s) ? s : [])
         if (!hwStudentId && Array.isArray(s) && s[0]?.id) setHwStudentId(String(s[0].id))
         if (!progStudentId && Array.isArray(s) && s[0]?.id) setProgStudentId(String(s[0].id))
+        if (!planStudentId && Array.isArray(s) && s[0]?.id) setPlanStudentId(String(s[0].id))
+        if (!libStudentId && Array.isArray(s) && s[0]?.id) setLibStudentId(String(s[0].id))
+        if (!quizStudentId && Array.isArray(s) && s[0]?.id) setQuizStudentId(String(s[0].id))
       }
     } catch (e) {
       setErr(e.message || 'Ошибка загрузки')
+    }
+  }
+
+  async function loadPlans() {
+    if (!token || !me) return
+    setErr('')
+    try {
+      const qs = new URLSearchParams()
+      if (isTutor) {
+        if (planStudentId) qs.set('student_user_id', planStudentId)
+      }
+      const rows = await apiFetch(`/api/plans${qs.toString() ? `?${qs.toString()}` : ''}`, { token })
+      const arr = Array.isArray(rows) ? rows : []
+      setPlans(arr)
+      if (!selectedPlanId && arr[0]?.id) setSelectedPlanId(String(arr[0].id))
+    } catch (e) {
+      setErr(e.message || 'Не удалось загрузить планы')
+    }
+  }
+
+  async function loadPlanItems(planId) {
+    if (!token || !planId) { setPlanItems([]); return }
+    setErr('')
+    try {
+      const rows = await apiFetch(`/api/plans/${Number(planId)}/items`, { token })
+      setPlanItems(Array.isArray(rows) ? rows : [])
+    } catch (e) {
+      setErr(e.message || 'Не удалось загрузить пункты плана')
+    }
+  }
+
+  async function createPlan() {
+    if (!token || !planStudentId) return
+    if (!planTitle.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch('/api/plans', { method: 'POST', token, body: { student_user_id: Number(planStudentId), title: planTitle.trim(), goal: planGoal || '' } })
+      setPlanTitle('')
+      setPlanGoal('')
+      await loadPlans()
+    } catch (e) {
+      setErr(e.message || 'Не удалось создать план')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addPlanItem() {
+    if (!token || !selectedPlanId) return
+    if (!itemTitle.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      const due_at = itemDue ? new Date(itemDue).toISOString() : null
+      await apiFetch(`/api/plans/${Number(selectedPlanId)}/items`, {
+        method: 'POST',
+        token,
+        body: { kind: itemKind, title: itemTitle.trim(), description: itemDesc || '', due_at, status: itemStatus }
+      })
+      setItemTitle('')
+      setItemDesc('')
+      setItemDue('')
+      await loadPlanItems(selectedPlanId)
+    } catch (e) {
+      setErr(e.message || 'Не удалось добавить пункт')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function patchPlanItem(id, patch) {
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch(`/api/plan-items/${id}`, { method: 'PATCH', token, body: patch })
+      await loadPlanItems(selectedPlanId)
+    } catch (e) {
+      setErr(e.message || 'Не удалось обновить')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function deletePlanItem(id) {
+    if (!confirm('Удалить пункт плана?')) return
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch(`/api/plan-items/${id}`, { method: 'DELETE', token })
+      await loadPlanItems(selectedPlanId)
+    } catch (e) {
+      setErr(e.message || 'Не удалось удалить')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function loadLibrary() {
+    if (!token || !me) return
+    setErr('')
+    try {
+      const sid = isTutor ? libStudentId : String(me.id)
+      if (!sid) { setLibrary([]); return }
+      const rows = await apiFetch(`/api/students/${Number(sid)}/library`, { token })
+      setLibrary(Array.isArray(rows) ? rows : [])
+    } catch (e) {
+      setErr(e.message || 'Не удалось загрузить библиотеку')
+    }
+  }
+
+  async function addLink() {
+    const sid = isTutor ? libStudentId : String(me.id)
+    if (!sid || !libLinkUrl.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      const tags = libTags.split(',').map(x => x.trim()).filter(Boolean)
+      await apiFetch(`/api/students/${Number(sid)}/library`, { method: 'POST', token, body: { kind: 'link', title: libLinkTitle || '', url: libLinkUrl.trim(), tags } })
+      setLibLinkTitle(''); setLibLinkUrl(''); setLibTags('')
+      await loadLibrary()
+    } catch (e) {
+      setErr(e.message || 'Не удалось добавить ссылку')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addNote() {
+    const sid = isTutor ? libStudentId : String(me.id)
+    if (!sid || !libNoteText.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      const tags = libTags.split(',').map(x => x.trim()).filter(Boolean)
+      await apiFetch(`/api/students/${Number(sid)}/library`, { method: 'POST', token, body: { kind: 'note', title: libNoteTitle || '', note: libNoteText.trim(), tags } })
+      setLibNoteTitle(''); setLibNoteText(''); setLibTags('')
+      await loadLibrary()
+    } catch (e) {
+      setErr(e.message || 'Не удалось добавить заметку')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function uploadLibFile() {
+    const sid = isTutor ? libStudentId : String(me.id)
+    if (!sid || !libFile) return
+    setBusy(true)
+    setErr('')
+    try {
+      const fd = new FormData()
+      fd.append('file', libFile)
+      if (libFileTitle) fd.append('title', libFileTitle)
+      if (libFileTags) fd.append('tags', libFileTags)
+      await apiUpload(`/api/students/${Number(sid)}/library/upload`, { token, formData: fd })
+      setLibFile(null); setLibFileTitle(''); setLibFileTags('')
+      await loadLibrary()
+    } catch (e) {
+      setErr(e.message || 'Не удалось загрузить файл')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function downloadLibraryFile(item) {
+    try {
+      const res = await fetch(apiUrl(`/api/library/${item.id}`), { headers: { Authorization: `Bearer ${token}` }, credentials: 'include' })
+      const ct = res.headers.get('content-type') || ''
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (ct.includes('application/json')) {
+        const j = await res.json()
+        alert(j.value || '')
+        return
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = item.name || `file-${item.id}`
+      document.body.appendChild(a)
+      a.click(); a.remove(); URL.revokeObjectURL(url)
+    } catch (e) {
+      setErr(e.message || 'Не удалось открыть')
+    }
+  }
+
+  async function loadQuizzes() {
+    if (!token || !me) return
+    setErr('')
+    try {
+      const qs = new URLSearchParams()
+      if (isTutor && quizStudentId) qs.set('student_user_id', quizStudentId)
+      const rows = await apiFetch(`/api/quizzes${qs.toString() ? `?${qs.toString()}` : ''}`, { token })
+      const arr = Array.isArray(rows) ? rows : []
+      setQuizzes(arr)
+      if (!selectedQuizId && arr[0]?.id) setSelectedQuizId(String(arr[0].id))
+    } catch (e) {
+      setErr(e.message || 'Не удалось загрузить тесты')
+    }
+  }
+
+  async function loadQuizDetails(quizId) {
+    if (!token || !quizId) { setQuizQuestions([]); setQuizAttempts([]); return }
+    setErr('')
+    try {
+      const qs = await apiFetch(`/api/quizzes/${Number(quizId)}/questions`, { token })
+      setQuizQuestions(Array.isArray(qs) ? qs : [])
+      const at = await apiFetch(`/api/quizzes/${Number(quizId)}/attempts`, { token })
+      setQuizAttempts(Array.isArray(at) ? at : [])
+    } catch (e) {
+      setErr(e.message || 'Не удалось загрузить детали теста')
+    }
+  }
+
+  async function createQuiz() {
+    if (!quizStudentId || !quizTitle.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch('/api/quizzes', { method: 'POST', token, body: { student_user_id: Number(quizStudentId), title: quizTitle.trim(), description: quizDesc || '' } })
+      setQuizTitle(''); setQuizDesc('')
+      await loadQuizzes()
+    } catch (e) {
+      setErr(e.message || 'Не удалось создать тест')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function patchQuiz(id, patch) {
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch(`/api/quizzes/${id}`, { method: 'PATCH', token, body: patch })
+      await loadQuizzes()
+      await loadQuizDetails(selectedQuizId)
+    } catch (e) {
+      setErr(e.message || 'Не удалось обновить тест')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addQuestion() {
+    if (!selectedQuizId || !qPrompt.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      const body = { kind: qKind, prompt: qPrompt.trim(), points: Number(qPoints || 1) }
+      if (qKind === 'mcq') {
+        const opts = qOptions.split('\n').map(x => x.trim()).filter(Boolean)
+        body.options = opts
+        body.correct_index = Number(qCorrectIndex || 0)
+      } else {
+        body.accepted_answers = qAccepted.split(',').map(x => x.trim()).filter(Boolean)
+      }
+      const qs = await apiFetch(`/api/quizzes/${Number(selectedQuizId)}/questions`, { method: 'POST', token, body })
+      setQuizQuestions(Array.isArray(qs) ? qs : [])
+      setQPrompt(''); setQOptions(''); setQAccepted(''); setQCorrectIndex('0'); setQPoints('1')
+    } catch (e) {
+      setErr(e.message || 'Не удалось добавить вопрос')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function startAttempt(quizId) {
+    setBusy(true)
+    setErr('')
+    try {
+      const out = await apiFetch(`/api/quizzes/${Number(quizId)}/attempts/start`, { method: 'POST', token })
+      setActiveAttempt(out)
+      setAttemptAnswers({})
+      setAttemptResult(null)
+    } catch (e) {
+      setErr(e.message || 'Не удалось начать попытку')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitAttempt() {
+    if (!activeAttempt?.attempt_id) return
+    setBusy(true)
+    setErr('')
+    try {
+      const answers = (activeAttempt.questions || []).map(q => ({ question_id: q.id, answer: attemptAnswers[q.id] ?? '' }))
+      const res = await apiFetch(`/api/attempts/${Number(activeAttempt.attempt_id)}/submit`, { method: 'POST', token, body: { answers } })
+      setAttemptResult(res)
+      // refresh attempts list
+      await loadQuizDetails(activeAttempt.quiz.id)
+    } catch (e) {
+      setErr(e.message || 'Не удалось отправить')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -100,6 +445,9 @@ export default function Learning() {
     loadHomework()
     loadProgress()
     loadMaterials()
+    loadPlans()
+    loadLibrary()
+    loadQuizzes()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, me])
 
@@ -107,6 +455,9 @@ export default function Learning() {
     if (tab === 'homework') loadHomework()
     if (tab === 'progress') loadProgress()
     if (tab === 'materials') loadMaterials()
+    if (tab === 'plan') loadPlans()
+    if (tab === 'library') loadLibrary()
+    if (tab === 'quizzes') loadQuizzes()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
@@ -114,6 +465,31 @@ export default function Learning() {
     if (tab === 'progress') loadProgress()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progStudentId])
+
+  useEffect(() => {
+    if (tab === 'plan') loadPlans()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planStudentId])
+
+  useEffect(() => {
+    loadPlanItems(selectedPlanId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlanId])
+
+  useEffect(() => {
+    if (tab === 'library') loadLibrary()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libStudentId])
+
+  useEffect(() => {
+    if (tab === 'quizzes') loadQuizzes()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quizStudentId])
+
+  useEffect(() => {
+    loadQuizDetails(selectedQuizId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedQuizId])
 
   const studentOptions = useMemo(() => {
     return (students || []).map(s => ({ value: String(s.id), label: `${s.hint} (#${s.id})` }))
@@ -231,6 +607,9 @@ export default function Learning() {
           <button className={tab === 'homework' ? 'btn btnPrimary' : 'btn'} onClick={() => setTab('homework')}>Домашка</button>
           <button className={tab === 'progress' ? 'btn btnPrimary' : 'btn'} onClick={() => setTab('progress')}>Прогресс</button>
           <button className={tab === 'materials' ? 'btn btnPrimary' : 'btn'} onClick={() => setTab('materials')}>Материалы</button>
+          <button className={tab === 'plan' ? 'btn btnPrimary' : 'btn'} onClick={() => setTab('plan')}>План</button>
+          <button className={tab === 'library' ? 'btn btnPrimary' : 'btn'} onClick={() => setTab('library')}>Библиотека</button>
+          <button className={tab === 'quizzes' ? 'btn btnPrimary' : 'btn'} onClick={() => setTab('quizzes')}>Тесты</button>
         </div>
       </div>
 
@@ -353,6 +732,366 @@ export default function Learning() {
           )}
 
           <div className="footerNote">Загрузка файлов делается внутри комнаты урока (кнопка “Прикрепить файл”).</div>
+        </div>
+      )}
+
+      {tab === 'plan' && (
+        <div className="card">
+          <div style={{ fontWeight: 900, fontSize: 18 }}>План обучения</div>
+          <div className="sub">Цель → пункты → чекпоинты. Репетитор ведёт план, ученик видит и может отмечать статус пунктов.</div>
+
+          {isTutor && (
+            <div className="card" style={{ marginTop: 10 }}>
+              <div style={{ fontWeight: 800 }}>Выбрать ученика</div>
+              <select className="select" value={planStudentId} onChange={(e) => setPlanStudentId(e.target.value)}>
+                {studentOptions.length === 0 ? <option value="">Нет учеников</option> : studentOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+
+              <div style={{ marginTop: 10, fontWeight: 800 }}>Создать новый план</div>
+              <div className="label">Название</div>
+              <input className="input" value={planTitle} onChange={(e) => setPlanTitle(e.target.value)} placeholder="Например: ЕГЭ математика — 8 недель" />
+              <div className="label">Цель (опционально)</div>
+              <textarea className="textarea" value={planGoal} onChange={(e) => setPlanGoal(e.target.value)} placeholder="Цель, формат, критерии результата…" />
+              <button className="btn btnPrimary" onClick={createPlan} disabled={busy || !planTitle.trim()}>Создать план</button>
+            </div>
+          )}
+
+          <div className="row" style={{ gap: 10, marginTop: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div className="label">План</div>
+              <select className="select" value={selectedPlanId} onChange={(e) => setSelectedPlanId(e.target.value)}>
+                {plans.length === 0 ? <option value="">Нет планов</option> : plans.map(p => <option key={p.id} value={String(p.id)}>{p.title || `План #${p.id}`} ({p.status})</option>)}
+              </select>
+            </div>
+            <div style={{ width: 220 }}>
+              <div className="label">Обновить</div>
+              <button className="btn" onClick={() => { loadPlans(); loadPlanItems(selectedPlanId) }} disabled={busy}>Обновить</button>
+            </div>
+          </div>
+
+          {selectedPlanId && isTutor && (
+            <div className="card" style={{ marginTop: 10 }}>
+              <div style={{ fontWeight: 800 }}>Добавить пункт</div>
+              <div className="row" style={{ gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div className="label">Название</div>
+                  <input className="input" value={itemTitle} onChange={(e) => setItemTitle(e.target.value)} placeholder="Например: Тригонометрия — база" />
+                </div>
+                <div style={{ width: 180 }}>
+                  <div className="label">Тип</div>
+                  <select className="select" value={itemKind} onChange={(e) => setItemKind(e.target.value)}>
+                    <option value="milestone">Чекпоинт</option>
+                    <option value="lesson">Урок</option>
+                    <option value="task">Задача</option>
+                  </select>
+                </div>
+                <div style={{ width: 180 }}>
+                  <div className="label">Статус</div>
+                  <select className="select" value={itemStatus} onChange={(e) => setItemStatus(e.target.value)}>
+                    <option value="todo">todo</option>
+                    <option value="in_progress">in_progress</option>
+                    <option value="done">done</option>
+                  </select>
+                </div>
+              </div>
+              <div className="row" style={{ gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div className="label">Описание (опционально)</div>
+                  <textarea className="textarea" value={itemDesc} onChange={(e) => setItemDesc(e.target.value)} placeholder="Коротко: что делаем, критерии…" />
+                </div>
+                <div style={{ width: 260 }}>
+                  <div className="label">Дедлайн (опционально)</div>
+                  <input className="input" type="datetime-local" value={itemDue} onChange={(e) => setItemDue(e.target.value)} />
+                </div>
+              </div>
+              <button className="btn btnPrimary" onClick={addPlanItem} disabled={busy || !itemTitle.trim()}>Добавить</button>
+            </div>
+          )}
+
+          <div className="card" style={{ marginTop: 10 }}>
+            <div style={{ fontWeight: 800 }}>Пункты</div>
+            {planItems.length === 0 ? (
+              <div className="small">Пока нет пунктов.</div>
+            ) : (
+              <div className="grid" style={{ gap: 10, marginTop: 8 }}>
+                {planItems.map(it => (
+                  <div key={it.id} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontWeight: 900 }}>{it.title}</div>
+                        <div className="small">{it.kind} • статус: <b>{it.status}</b>{it.due_at ? ` • дедлайн: ${fmt(it.due_at)}` : ''}</div>
+                        {it.description && <div className="small" style={{ marginTop: 6 }}>{it.description}</div>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <select className="select" value={it.status} onChange={(e) => patchPlanItem(it.id, { status: e.target.value })} disabled={busy}>
+                          <option value="todo">todo</option>
+                          <option value="in_progress">in_progress</option>
+                          <option value="done">done</option>
+                        </select>
+                        {isTutor && <button className="btn" onClick={() => deletePlanItem(it.id)} disabled={busy}>Удалить</button>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'library' && (
+        <div className="card">
+          <div style={{ fontWeight: 900, fontSize: 18 }}>Библиотека ученика</div>
+          <div className="sub">Файлы, ссылки и заметки — не привязаны к конкретному занятию. Удобно хранить “всё по ученику”.</div>
+
+          {isTutor && (
+            <div className="card" style={{ marginTop: 10 }}>
+              <div style={{ fontWeight: 800 }}>Выбрать ученика</div>
+              <select className="select" value={libStudentId} onChange={(e) => setLibStudentId(e.target.value)}>
+                {studentOptions.length === 0 ? <option value="">Нет учеников</option> : studentOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div className="split" style={{ marginTop: 10 }}>
+            <div className="card">
+              <div style={{ fontWeight: 800 }}>Загрузить файл</div>
+              <div className="label">Название (опционально)</div>
+              <input className="input" value={libFileTitle} onChange={(e) => setLibFileTitle(e.target.value)} placeholder="Например: Таблица формул" />
+              <div className="label">Теги (через запятую)</div>
+              <input className="input" value={libFileTags} onChange={(e) => setLibFileTags(e.target.value)} placeholder="алгебра, формулы" />
+              <input className="input" type="file" onChange={(e) => setLibFile(e.target.files?.[0] || null)} />
+              <button className="btn btnPrimary" onClick={uploadLibFile} disabled={busy || !libFile}>Загрузить</button>
+            </div>
+
+            <div className="card">
+              <div style={{ fontWeight: 800 }}>Ссылка / заметка</div>
+              <div className="label">Теги (общие для формы)</div>
+              <input className="input" value={libTags} onChange={(e) => setLibTags(e.target.value)} placeholder="геометрия, видео" />
+
+              <div style={{ marginTop: 10, fontWeight: 800 }}>Ссылка</div>
+              <div className="label">Название</div>
+              <input className="input" value={libLinkTitle} onChange={(e) => setLibLinkTitle(e.target.value)} placeholder="YouTube / статья" />
+              <div className="label">URL</div>
+              <input className="input" value={libLinkUrl} onChange={(e) => setLibLinkUrl(e.target.value)} placeholder="https://…" />
+              <button className="btn" onClick={addLink} disabled={busy || !libLinkUrl.trim()}>Добавить ссылку</button>
+
+              <div style={{ marginTop: 10, fontWeight: 800 }}>Заметка</div>
+              <div className="label">Название</div>
+              <input className="input" value={libNoteTitle} onChange={(e) => setLibNoteTitle(e.target.value)} placeholder="Что повторить" />
+              <div className="label">Текст</div>
+              <textarea className="textarea" value={libNoteText} onChange={(e) => setLibNoteText(e.target.value)} placeholder="Короткая заметка…" />
+              <button className="btn" onClick={addNote} disabled={busy || !libNoteText.trim()}>Добавить заметку</button>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginTop: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 800 }}>Список</div>
+              <button className="btn" onClick={loadLibrary} disabled={busy}>Обновить</button>
+            </div>
+            {library.length === 0 ? (
+              <div className="small">Пока пусто.</div>
+            ) : (
+              <div className="grid" style={{ gap: 10, marginTop: 8 }}>
+                {library.map(it => (
+                  <div key={it.id} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontWeight: 900 }}>{it.title || it.name}</div>
+                        <div className="small">{it.kind} • добавил: {it.uploader_hint} • {fmt(it.created_at)}</div>
+                        {it.tags?.length ? <div className="small">Теги: {it.tags.join(', ')}</div> : null}
+                        {it.preview ? <div className="small" style={{ marginTop: 6 }}>{it.preview}</div> : null}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {it.kind === 'link' ? (
+                          <a className="btn" href={it.url} target="_blank" rel="noreferrer">Открыть</a>
+                        ) : (
+                          <button className="btn" onClick={() => downloadLibraryFile(it)}>Открыть</button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'quizzes' && (
+        <div className="card">
+          <div style={{ fontWeight: 900, fontSize: 18 }}>Тесты</div>
+          <div className="sub">Репетитор создаёт тест → публикует → ученик проходит → результат считается автоматически (для MCQ и коротких ответов).</div>
+
+          {isTutor && (
+            <div className="card" style={{ marginTop: 10 }}>
+              <div style={{ fontWeight: 800 }}>Выбрать ученика</div>
+              <select className="select" value={quizStudentId} onChange={(e) => setQuizStudentId(e.target.value)}>
+                {studentOptions.length === 0 ? <option value="">Нет учеников</option> : studentOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+
+              <div style={{ marginTop: 10, fontWeight: 800 }}>Создать тест</div>
+              <div className="label">Название</div>
+              <input className="input" value={quizTitle} onChange={(e) => setQuizTitle(e.target.value)} placeholder="Мини-тест: функции" />
+              <div className="label">Описание (опционально)</div>
+              <textarea className="textarea" value={quizDesc} onChange={(e) => setQuizDesc(e.target.value)} placeholder="Сделай до следующего урока…" />
+              <button className="btn btnPrimary" onClick={createQuiz} disabled={busy || !quizTitle.trim()}>Создать</button>
+            </div>
+          )}
+
+          <div className="row" style={{ gap: 10, marginTop: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div className="label">Тест</div>
+              <select className="select" value={selectedQuizId} onChange={(e) => setSelectedQuizId(e.target.value)}>
+                {quizzes.length === 0 ? <option value="">Нет тестов</option> : quizzes.map(q => <option key={q.id} value={String(q.id)}>{q.title} ({q.status})</option>)}
+              </select>
+            </div>
+            <div style={{ width: 220 }}>
+              <div className="label">Обновить</div>
+              <button className="btn" onClick={() => { loadQuizzes(); loadQuizDetails(selectedQuizId) }} disabled={busy}>Обновить</button>
+            </div>
+          </div>
+
+          {!isTutor && selectedQuizId && (
+            <div className="card" style={{ marginTop: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 800 }}>Прохождение</div>
+                <button className="btn btnPrimary" onClick={() => startAttempt(selectedQuizId)} disabled={busy}>Начать попытку</button>
+              </div>
+              {activeAttempt && activeAttempt.quiz?.id === Number(selectedQuizId) && (
+                <div className="card" style={{ marginTop: 10 }}>
+                  <div className="small">Попытка #{activeAttempt.attempt_id}</div>
+                  <div className="grid" style={{ gap: 10, marginTop: 8 }}>
+                    {(activeAttempt.questions || []).map((q) => (
+                      <div key={q.id} className="card">
+                        <div style={{ fontWeight: 900 }}>{q.prompt}</div>
+                        <div className="small">Тип: {q.kind} • Баллы: {q.points}</div>
+                        {q.kind === 'mcq' ? (
+                          <select className="select" value={attemptAnswers[q.id] ?? ''} onChange={(e) => setAttemptAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}>
+                            <option value="">— выберите —</option>
+                            {(q.options || []).map((opt, idx) => <option key={idx} value={String(idx)}>{opt}</option>)}
+                          </select>
+                        ) : (
+                          <input className="input" value={attemptAnswers[q.id] ?? ''} onChange={(e) => setAttemptAnswers(prev => ({ ...prev, [q.id]: e.target.value }))} placeholder="Ответ…" />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <button className="btn btnPrimary" style={{ marginTop: 10 }} onClick={submitAttempt} disabled={busy}>Отправить</button>
+                  {attemptResult && (
+                    <div className="footerNote" style={{ marginTop: 10 }}>
+                      Результат: {attemptResult.score} / {attemptResult.max_score}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {isTutor && selectedQuizId && (
+            <div className="split" style={{ marginTop: 10 }}>
+              <div className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontWeight: 800 }}>Вопросы</div>
+                    <div className="small">Добавьте вопросы и затем переведите тест в published.</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn" onClick={() => patchQuiz(selectedQuizId, { status: 'draft' })} disabled={busy}>draft</button>
+                    <button className="btn btnPrimary" onClick={() => patchQuiz(selectedQuizId, { status: 'published' })} disabled={busy}>published</button>
+                    <button className="btn" onClick={() => patchQuiz(selectedQuizId, { status: 'closed' })} disabled={busy}>closed</button>
+                  </div>
+                </div>
+
+                <div className="card" style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 800 }}>Добавить вопрос</div>
+                  <div className="row" style={{ gap: 10 }}>
+                    <div style={{ width: 180 }}>
+                      <div className="label">Тип</div>
+                      <select className="select" value={qKind} onChange={(e) => setQKind(e.target.value)}>
+                        <option value="mcq">MCQ</option>
+                        <option value="short">Short</option>
+                      </select>
+                    </div>
+                    <div style={{ width: 140 }}>
+                      <div className="label">Баллы</div>
+                      <input className="input" value={qPoints} onChange={(e) => setQPoints(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="label">Вопрос</div>
+                  <textarea className="textarea" value={qPrompt} onChange={(e) => setQPrompt(e.target.value)} placeholder="Текст вопроса…" />
+                  {qKind === 'mcq' ? (
+                    <>
+                      <div className="label">Варианты (каждый с новой строки)</div>
+                      <textarea className="textarea" value={qOptions} onChange={(e) => setQOptions(e.target.value)} placeholder="A\nB\nC\nD" />
+                      <div className="label">Правильный индекс (0..n-1)</div>
+                      <input className="input" value={qCorrectIndex} onChange={(e) => setQCorrectIndex(e.target.value)} />
+                    </>
+                  ) : (
+                    <>
+                      <div className="label">Допустимые ответы (через запятую)</div>
+                      <input className="input" value={qAccepted} onChange={(e) => setQAccepted(e.target.value)} placeholder="sin x, sin(x)" />
+                    </>
+                  )}
+                  <button className="btn btnPrimary" onClick={addQuestion} disabled={busy || !qPrompt.trim()}>Добавить</button>
+                </div>
+
+                {quizQuestions.length === 0 ? (
+                  <div className="small" style={{ marginTop: 10 }}>Вопросов пока нет.</div>
+                ) : (
+                  <div className="grid" style={{ gap: 10, marginTop: 10 }}>
+                    {quizQuestions.map(q => (
+                      <div key={q.id} className="card">
+                        <div style={{ fontWeight: 900 }}>{q.prompt}</div>
+                        <div className="small">{q.kind} • {q.points} балл(ов)</div>
+                        {q.kind === 'mcq' && q.options?.length ? (
+                          <div className="small" style={{ marginTop: 6 }}>Варианты: {q.options.join(' | ')}</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="card">
+                <div style={{ fontWeight: 800 }}>Попытки</div>
+                {quizAttempts.length === 0 ? (
+                  <div className="small">Пока нет попыток.</div>
+                ) : (
+                  <div className="grid" style={{ gap: 10, marginTop: 8 }}>
+                    {quizAttempts.map(a => (
+                      <div key={a.id} className="card">
+                        <div style={{ fontWeight: 900 }}>Attempt #{a.id}</div>
+                        <div className="small">Score: {a.score}/{a.max_score}</div>
+                        <div className="small">Started: {fmt(a.started_at)}</div>
+                        {a.submitted_at ? <div className="small">Submitted: {fmt(a.submitted_at)}</div> : <div className="small">Not submitted</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {!isTutor && selectedQuizId && (
+            <div className="card" style={{ marginTop: 10 }}>
+              <div style={{ fontWeight: 800 }}>История попыток</div>
+              {quizAttempts.length === 0 ? (
+                <div className="small">Пока нет попыток.</div>
+              ) : (
+                <div className="grid" style={{ gap: 10, marginTop: 8 }}>
+                  {quizAttempts.map(a => (
+                    <div key={a.id} className="card">
+                      <div style={{ fontWeight: 900 }}>Attempt #{a.id}</div>
+                      <div className="small">Score: {a.score}/{a.max_score}</div>
+                      <div className="small">{fmt(a.started_at)}{a.submitted_at ? ` → ${fmt(a.submitted_at)}` : ''}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
