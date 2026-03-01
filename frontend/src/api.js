@@ -14,7 +14,7 @@ export function apiUrl(path) {
 function prettyNetworkError(err) {
   const msg = (err && err.message) ? String(err.message) : ''
   if (/Failed to fetch|NetworkError|ECONN|ENOTFOUND|ERR_NETWORK|CORS/i.test(msg)) {
-    return 'Не удалось подключиться к серверу. Проверь, что бэкенд запущен, домен API корректный и нет проблем с CORS.'
+    return 'Не удалось подключиться к серверу. Проверьте, что бэкенд запущен и домен открывает именно этот сервис. Если вы открыли приложение по кастомному домену (.com) до настройки DNS, временно используйте домен Railway вида https://<service>.up.railway.app (Railway → Networking → Domains).'
   }
   return msg || 'Network error'
 }
@@ -33,7 +33,8 @@ async function fetchSafe(url, init) {
   try {
     return await fetch(url, init)
   } catch (err) {
-    throw new Error(prettyNetworkError(err))
+    // Include URL so we can instantly see if frontend is calling the wrong host (e.g., localhost).
+    throw new Error(`${prettyNetworkError(err)} (URL: ${url})`)
   }
 }
 

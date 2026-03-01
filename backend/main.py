@@ -2452,7 +2452,12 @@ if DL_STATIC_DIR.exists():
 
     @app.get("/", include_in_schema=False)
     def _spa_root():
-        return FileResponse(str(DL_STATIC_DIR / "index.html"))
+        # Prevent stale index.html caching, otherwise browsers/CDNs can keep an old bundle
+        # which may point to a wrong API host and cause "Failed to fetch".
+        return FileResponse(
+            str(DL_STATIC_DIR / "index.html"),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa_any(full_path: str):
@@ -2462,5 +2467,8 @@ if DL_STATIC_DIR.exists():
         candidate = DL_STATIC_DIR / full_path
         if candidate.exists() and candidate.is_file():
             return FileResponse(str(candidate))
-        return FileResponse(str(DL_STATIC_DIR / "index.html"))
+        return FileResponse(
+            str(DL_STATIC_DIR / "index.html"),
+            headers={"Cache-Control": "no-store"},
+        )
 
