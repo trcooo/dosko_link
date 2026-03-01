@@ -1,9 +1,17 @@
 const ENV_API_BASE = (import.meta.env.VITE_API_BASE || '').trim()
 
-// MVP single-service (Railway):
-// - dev: can call local backend or VITE_API_BASE
-// - prod: ALWAYS same origin (avoid misconfig / CORS)
-const API_BASE = import.meta.env.DEV
+// IMPORTANT: Do not rely on Vite's build-time DEV/PROD flags for API routing.
+// Some build environments may accidentally behave like "dev" or inject npm config.
+// For MVP stability:
+// - If running on localhost -> call local backend (or ENV override)
+// - Otherwise -> ALWAYS same-origin (single-service Railway domain)
+function isLocalHost() {
+  if (typeof window === 'undefined') return false
+  const h = window.location.hostname
+  return h === 'localhost' || h === '127.0.0.1'
+}
+
+const API_BASE = isLocalHost()
   ? (ENV_API_BASE || 'http://localhost:8000')
   : ''
 
