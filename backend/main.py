@@ -1414,6 +1414,42 @@ def _profile_me_out(p: TutorProfile) -> TutorProfileMeOut:
     )
 
 
+def _get_or_create_tutor_profile(session: Session, user: User) -> TutorProfile:
+    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == user.id)).first()
+    if p:
+        return p
+    base_name = (getattr(user, "email", "") or "репетитор").split("@", 1)[0] or "репетитор"
+    p = TutorProfile(user_id=user.id, display_name=base_name)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return p
+
+
+def _tutor_profile_missing_required(p: TutorProfile) -> List[str]:
+    missing: List[str] = []
+
+    def _arr(attr: str) -> List[str]:
+        return [str(x).strip() for x in _loads_list(getattr(p, attr, "[]")) if str(x).strip()]
+
+    if not str(getattr(p, "display_name", "") or "").strip():
+        missing.append("имя")
+    if not _arr("subjects_json"):
+        missing.append("хотя бы 1 предмет")
+    if not _arr("grades_json"):
+        missing.append("классы")
+    if int(getattr(p, "price_per_hour", 0) or 0) <= 0:
+        missing.append("цена за час")
+    if not str(getattr(p, "education", "") or "").strip():
+        missing.append("образование")
+    if not str(getattr(p, "bio", "") or "").strip():
+        missing.append("описание / о себе")
+    if not _arr("certificate_links_json"):
+        missing.append("ссылки на сертификаты/дипломы")
+
+    return missing
+
+
 _DEFAULT_CATALOG = {
     "subjects": ["Математика", "Английский", "Физика", "Химия", "Русский язык", "Информатика", "Программирование"],
     "goals": ["ЕГЭ", "ОГЭ", "ЦТ", "ЦЭ", "Разговорный", "IELTS", "Подтянуть оценки"],
@@ -1560,7 +1596,7 @@ def list_tutors(
     return [_profile_public_out(p) for p in filtered]
 
 
-@app.get("/api/tutors/{profile_id}", response_model=TutorProfilePublicOut)
+@app.get("/api/tutors/{profile_id:int}", response_model=TutorProfilePublicOut)
 def get_tutor(profile_id: int, session: Session = Depends(get_session)):
     p = session.get(TutorProfile, profile_id)
     if not p or not p.is_published:
@@ -1597,9 +1633,7 @@ def get_my_profile(
     user: User = Depends(require_role("tutor", "admin")),
     session: Session = Depends(get_session),
 ):
-    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == user.id)).first()
-    if not p:
-        raise HTTPException(404, "profile not found")
+    p = _get_or_create_tutor_profile(session, user)
     return _profile_me_out(p)
 
 
@@ -1609,9 +1643,7 @@ def update_my_profile(
     user: User = Depends(require_role("tutor", "admin")),
     session: Session = Depends(get_session),
 ):
-    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == user.id)).first()
-    if not p:
-        raise HTTPException(404, "profile not found")
+    p = _get_or_create_tutor_profile(session, user)
 
     data = payload.model_dump(exclude_unset=True)
 
@@ -1651,9 +1683,11 @@ def submit_profile_for_moderation(
     user: User = Depends(require_role("tutor", "admin")),
     session: Session = Depends(get_session),
 ):
-    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == user.id)).first()
-    if not p:
-        raise HTTPException(404, "profile not found")
+    p = _get_or_create_tutor_profile(session, user)
+
+    missing = _tutor_profile_missing_required(p)
+    if missing:
+        raise HTTPException(400, {"message": "Профиль не заполнен", "missing": missing})
 
     p.documents_status = "pending"
     p.documents_note = ""
@@ -1669,9 +1703,11 @@ def publish_my_profile(
     user: User = Depends(require_role("tutor", "admin")),
     session: Session = Depends(get_session),
 ):
-    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == user.id)).first()
-    if not p:
-        raise HTTPException(404, "profile not found")
+    p = _get_or_create_tutor_profile(session, user)
+
+    missing = _tutor_profile_missing_required(p)
+    if missing:
+        raise HTTPException(400, {"message": "Профиль не заполнен", "missing": missing})
 
     p.is_published = True
     # if not approved yet -> pending moderation

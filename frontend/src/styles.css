@@ -372,3 +372,62 @@ a{color:inherit; text-decoration:none}
   border-radius:16px; border:1px solid rgba(229,231,235,.9); background:rgba(255,255,255,.92);
   padding:12px;
 }
+
+/* Role-based dashboard / tutor onboarding */
+.roleHeaderCard{
+  background:
+    radial-gradient(600px 220px at 12% 0%, rgba(255,106,0,.10), transparent 60%),
+    rgba(255,255,255,.92);
+}
+.roleHeroGrid{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px}
+@media (max-width:980px){.roleHeroGrid{grid-template-columns:1fr}}
+.roleStat{
+  border:1px solid rgba(229,231,235,.9);
+  border-radius:14px;
+  background:rgba(255,255,255,.9);
+  padding:10px 12px;
+}
+.progressBar{
+  height:8px;
+  border-radius:999px;
+  overflow:hidden;
+  background:rgba(17,24,39,.08);
+  border:1px solid rgba(229,231,235,.9);
+}
+.progressBar > span{
+  display:block;
+  height:100%;
+  background: linear-gradient(90deg, var(--orange), var(--orange2));
+}
+.onboardingBox{
+  margin-top:12px;
+  border-radius:16px;
+  border:1px solid rgba(255,106,0,.2);
+  background:rgba(255,106,0,.04);
+  padding:12px;
+}
+.checkGrid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px}
+@media (max-width:640px){.checkGrid{grid-template-columns:1fr}}
+.checkItem{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  border:1px solid rgba(229,231,235,.9);
+  border-radius:12px;
+  padding:8px 10px;
+  background:rgba(255,255,255,.8);
+  color:var(--muted);
+  font-size:13px;
+}
+.checkItem.ok{
+  color:#166534;
+  border-color: rgba(34,197,94,.25);
+  background: rgba(34,197,94,.08);
+}
+.tutorProfilePreviewCard{
+  margin-top:12px;
+  border-radius:16px;
+  border:1px solid rgba(229,231,235,.9);
+  background:rgba(255,255,255,.9);
+  padding:12px;
+}

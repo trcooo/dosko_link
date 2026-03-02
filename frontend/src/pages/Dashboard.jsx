@@ -18,8 +18,31 @@ function linesToList(v) {
     .filter(Boolean)
 }
 
-function listToLines(arr) {
-  return Array.isArray(arr) ? arr.join('\n') : ''
+function listHas(arr) {
+  return Array.isArray(arr) && arr.some(v => String(v || '').trim())
+}
+
+function buildTutorChecklist(profile, backgroundsText, certLinksText) {
+  const certs = linesToList(certLinksText)
+  const items = [
+    { key: 'name', label: 'Имя', ok: Boolean(String(profile?.display_name || '').trim()) },
+    { key: 'subjects', label: 'Предметы', ok: listHas(profile?.subjects) },
+    { key: 'grades', label: 'Классы', ok: listHas(profile?.grades) },
+    { key: 'price', label: 'Цена / час', ok: Number(profile?.price_per_hour || 0) > 0 },
+    { key: 'education', label: 'Образование', ok: Boolean(String(profile?.education || '').trim()) },
+    { key: 'bio', label: 'О себе', ok: Boolean(String(profile?.bio || '').trim()) },
+    { key: 'exp', label: 'Опыт / бекграунд', ok: linesToList(backgroundsText).length > 0 },
+    { key: 'docs', label: 'Ссылки на дипломы/сертификаты', ok: certs.length > 0 },
+  ]
+  const done = items.filter(i => i.ok).length
+  return { items, done, total: items.length, percent: Math.round((done / Math.max(1, items.length)) * 100) }
+}
+
+function roleTitle(role) {
+  if (role === 'tutor') return 'Кабинет репетитора'
+  if (role === 'student') return 'Кабинет ученика'
+  if (role === 'admin') return 'Кабинет администратора'
+  return 'Кабинет'
 }
 
 export default function Dashboard() {
@@ -56,9 +79,20 @@ export default function Dashboard() {
   const levelOptions = useMemo(() => catalog.levels || [], [catalog])
   const gradeOptions = useMemo(() => catalog.grades || [], [catalog])
 
+  const tutorChecklist = useMemo(
+    () => buildTutorChecklist(profile, backgroundsText, certLinksText),
+    [profile, backgroundsText, certLinksText]
+  )
+  const tutorMissingLabels = useMemo(
+    () => tutorChecklist.items.filter(i => !i.ok).map(i => i.label),
+    [tutorChecklist]
+  )
+  const canSubmitTutorProfile = me?.role === 'tutor' ? tutorMissingLabels.length === 0 : true
+
   useEffect(() => {
     if (authLoading) return
-    if (!me) nav('/login')
+    if (!me) { nav('/login'); return }
+    if (me.role === 'admin') { nav('/admin'); return }
   }, [authLoading, me, nav])
 
 
@@ -274,17 +308,52 @@ export default function Dashboard() {
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <div className="card">
+      <div className="card roleHeaderCard">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
           <div>
-            <div style={{ fontWeight: 900, fontSize: 22 }}>Кабинет</div>
+            <div style={{ fontWeight: 900, fontSize: 22 }}>{roleTitle(me.role)}</div>
             <div className="small">{me.email} • роль: {me.role}</div>
+            {me.role === 'tutor' && <div className="sub" style={{ marginTop: 6 }}>Заполни профиль → отправь на модерацию → после одобрения профиль появится в выдаче.</div>}
+            {me.role === 'student' && <div className="sub" style={{ marginTop: 6 }}>Управляй бронями, комнатами уроков, оплатой и отзывами в одном месте.</div>}
           </div>
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button className="btn" onClick={load}>Обновить</button>
-            <Link className="btn btnPrimary" to="/">Перейти к поиску</Link>
+            {me.role === 'tutor' ? (
+              <Link className="btn btnPrimary" to="/">Открыть маркетплейс</Link>
+            ) : (
+              <Link className="btn btnPrimary" to="/">Перейти к поиску</Link>
+            )}
           </div>
         </div>
+
+        {me.role === 'tutor' && profile && (
+          <div className="roleHeroGrid" style={{ marginTop: 12 }}>
+            <div className="roleStat">
+              <div className="small">Готовность профиля</div>
+              <div style={{ fontWeight: 900, fontSize: 22 }}>{tutorChecklist.percent}%</div>
+              <div className="progressBar"><span style={{ width: `${tutorChecklist.percent}%` }} /></div>
+            </div>
+            <div className="roleStat">
+              <div className="small">Модерация</div>
+              <div style={{ fontWeight: 900 }}>{profile.documents_status || 'draft'}</div>
+              <div className="small">{profile.documents_status === 'approved' ? 'Документы проверены' : 'Проверь чеклист ниже и отправь профиль'}</div>
+            </div>
+            <div className="roleStat">
+              <div className="small">Публикация</div>
+              <div style={{ fontWeight: 900 }}>{profile.is_published ? 'Включена' : 'Не опубликован'}</div>
+              <div className="small">В списке виден только после модерации</div>
+            </div>
+          </div>
+        )}
+
+        {me.role === 'student' && (
+          <div className="roleHeroGrid" style={{ marginTop: 12 }}>
+            <div className="roleStat"><div className="small">Занятий</div><div style={{ fontWeight: 900, fontSize: 22 }}>{bookings.length}</div></div>
+            <div className="roleStat"><div className="small">Баланс</div><div style={{ fontWeight: 900, fontSize: 22 }}>{Number(balanceInfo?.balance || 0)} ₽</div></div>
+            <div className="roleStat"><div className="small">Действие</div><div style={{ fontWeight: 900 }}>Выбери репетитора</div><div className="small">Фильтры и бронирование — на главной</div></div>
+          </div>
+        )}
+
         {err && <div className="footerNote">{err}</div>}
       </div>
 
@@ -293,6 +362,40 @@ export default function Dashboard() {
           <div className="card">
             <div style={{ fontWeight: 900, fontSize: 18 }}>Профиль репетитора</div>
             <div className="sub">Фото, предметы, классы, сертификаты (ссылки на Google Drive/облако) и реквизиты для оплаты напрямую.</div>
+
+            <div className="onboardingBox">
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ fontWeight: 800 }}>Создание профиля репетитора</div>
+                <div className="small">{tutorChecklist.done}/{tutorChecklist.total} обязательных пунктов</div>
+              </div>
+              <div className="progressBar" style={{ marginTop: 8 }}><span style={{ width: `${tutorChecklist.percent}%` }} /></div>
+              <div className="checkGrid" style={{ marginTop: 10 }}>
+                {tutorChecklist.items.map(it => (
+                  <div key={it.key} className={`checkItem ${it.ok ? 'ok' : ''}`}>
+                    <span>{it.ok ? '✓' : '•'}</span>
+                    <span>{it.label}</span>
+                  </div>
+                ))}
+              </div>
+              {tutorMissingLabels.length > 0 && (
+                <div className="small" style={{ marginTop: 8 }}>Для отправки на модерацию заполни: {tutorMissingLabels.join(', ')}.</div>
+              )}
+            </div>
+
+            <div className="tutorProfilePreviewCard">
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                {profile.photo_url ? (
+                  <img className="profilePhoto" src={profile.photo_url} alt="Фото репетитора" />
+                ) : (
+                  <div className="profilePhoto profilePhotoFallback">{(profile.display_name || 'R').slice(0,1).toUpperCase()}</div>
+                )}
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontWeight: 900 }}>{profile.display_name || 'Имя репетитора'}</div>
+                  <div className="small">{listHas(profile.subjects) ? profile.subjects.join(', ') : 'Укажи предметы'} • {Number(profile.price_per_hour || 0) > 0 ? `${profile.price_per_hour} ₽/ч` : 'Цена не указана'}</div>
+                  <div className="small">Классы: {listHas(profile.grades) ? profile.grades.join(', ') : 'не указаны'} • Язык: {profile.language || 'ru'}</div>
+                </div>
+              </div>
+            </div>
 
             <div className="row" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 240 }}>
@@ -380,8 +483,8 @@ export default function Dashboard() {
 
             <div style={{ display: 'flex', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
               <button className="btn btnPrimary" onClick={saveProfile} disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить профиль'}</button>
-              <button className="btn" onClick={submitForModeration} disabled={saving}>Отправить на модерацию</button>
-              <button className="btn" onClick={publishProfile} disabled={saving}>{profile.is_published ? 'Опубликовано' : 'Опубликовать'}</button>
+              <button className="btn" onClick={submitForModeration} disabled={saving || !canSubmitTutorProfile}>Отправить на модерацию</button>
+              <button className="btn" onClick={publishProfile} disabled={saving || !canSubmitTutorProfile}>{profile.is_published ? 'Переотправить на публикацию' : 'Опубликовать профиль'}</button>
             </div>
           </div>
 
@@ -459,7 +562,7 @@ export default function Dashboard() {
 
       {me.role !== 'tutor' && (
         <div className="card">
-          <div style={{ fontWeight: 900, fontSize: 18 }}>Доступные слоты</div>
+          <div style={{ fontWeight: 900, fontSize: 18 }}>Подбор и доступные слоты</div>
           <div className="sub">Выбери репетитора на странице профиля и забронируй слот. После брони появится комната урока.</div>
           <div className="grid" style={{ gap: 10 }}>
             {slots.length === 0 ? (
@@ -514,7 +617,7 @@ export default function Dashboard() {
                         <>
                           <button className="btn" onClick={() => cancelBooking(b.id)} disabled={saving}>Отменить</button>
                           <button className="btn" onClick={() => setRescheduleBooking(b)} disabled={saving}>Перенести</button>
-                          <button className="btn" onClick={() => completeBooking(b.id)} disabled={saving}>Завершить</button>
+                          {(me.role === 'tutor' || me.role === 'admin') && <button className="btn" onClick={() => completeBooking(b.id)} disabled={saving}>Завершить</button>}
                         </>
                       )}
 

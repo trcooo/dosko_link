@@ -88,7 +88,17 @@ export async function apiFetch(path, { method = 'GET', token, body, headers, _re
 
   const data = await parseJsonSafe(res)
   if (!res.ok) {
-    const msg = (data && (data.detail || data.message)) || `HTTP ${res.status}`
+    const detail = data && (data.detail || data.message)
+    let msg = detail || `HTTP ${res.status}`
+    if (detail && typeof detail === 'object') {
+      if (Array.isArray(detail.missing)) {
+        msg = `${detail.message || 'Ошибка'}: ${detail.missing.join(', ')}`
+      } else if (detail.message) {
+        msg = detail.message
+      } else {
+        try { msg = JSON.stringify(detail) } catch { msg = String(detail) }
+      }
+    }
     throw new Error(msg)
   }
   return data
@@ -120,7 +130,17 @@ export async function apiUpload(path, { method = 'POST', token, formData, header
 
   const data = await parseJsonSafe(res)
   if (!res.ok) {
-    const msg = (data && (data.detail || data.message)) || `HTTP ${res.status}`
+    const detail = data && (data.detail || data.message)
+    let msg = detail || `HTTP ${res.status}`
+    if (detail && typeof detail === 'object') {
+      if (Array.isArray(detail.missing)) {
+        msg = `${detail.message || 'Ошибка'}: ${detail.missing.join(', ')}`
+      } else if (detail.message) {
+        msg = detail.message
+      } else {
+        try { msg = JSON.stringify(detail) } catch { msg = String(detail) }
+      }
+    }
     throw new Error(msg)
   }
   return data

@@ -31,17 +31,17 @@ function NavBar() {
         </Link>
 
         <div className="navLinks">
-          <Link className="btn btnGhost" to="/">Поиск</Link>
-          {me && <Link className="btn btnGhost" to="/dashboard">Кабинет</Link>}
-          {me && <Link className="btn btnGhost" to="/learning">Учёба</Link>}
-          {me && (
+          <Link className="btn btnGhost" to="/">{me?.role === 'tutor' ? 'Маркетплейс' : 'Поиск'}</Link>
+          {me && me.role !== 'admin' && <Link className="btn btnGhost" to="/dashboard">{me.role === 'tutor' ? 'Кабинет репетитора' : 'Кабинет ученика'}</Link>}
+          {me && me.role === 'admin' && <Link className="btn btnGhost" to="/admin">Админ-панель</Link>}
+          {me && me.role !== 'admin' && <Link className="btn btnGhost" to="/learning">{me.role === 'tutor' ? 'Ученики / обучение' : 'Учёба'}</Link>}
+          {me && me.role !== 'admin' && (
             <Link className="btn btnGhost" to="/wallet">
-              Баланс
+              {me.role === 'tutor' ? 'Доходы' : 'Баланс'}
               <span className="pill" style={{ marginLeft: 8 }}>{bal} ₽</span>
               {me.role === 'tutor' ? <span className="pill" style={{ marginLeft: 6, opacity: .85 }}>+{earn} ₽</span> : null}
             </Link>
           )}
-          {me && me.role === 'admin' && <Link className="btn btnGhost" to="/admin">Админ</Link>}
           {!me ? (
             <>
               <Link className="btn" to="/login">Войти</Link>
