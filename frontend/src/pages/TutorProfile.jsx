@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { apiFetch } from '../api'
 import { useAuth } from '../auth.jsx'
@@ -14,6 +14,105 @@ function initials(name) {
   return s.split(/\s+/).slice(0, 2).map(x => x[0]?.toUpperCase()).join('') || 'DL'
 }
 
+function dateKey(d) {
+  const x = new Date(d)
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+}
+
+function buildMonthCells(monthDate) {
+  const first = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
+  const startWeekday = (first.getDay() + 6) % 7
+  const gridStart = new Date(first)
+  gridStart.setDate(first.getDate() - startWeekday)
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart)
+    d.setDate(gridStart.getDate() + i)
+    return d
+  })
+}
+
+function PublicSlotsCalendar({ slots = [], onBook, bookingId }) {
+  const [monthOffset, setMonthOffset] = useState(0)
+  const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+
+  const normalized = useMemo(() => (Array.isArray(slots) ? slots : [])
+    .map(s => {
+      const start = new Date(s.starts_at)
+      const end = new Date(s.ends_at)
+      if (Number.isNaN(start.getTime())) return null
+      return { ...s, _start: start, _end: Number.isNaN(end.getTime()) ? null : end }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a._start - b._start), [slots])
+
+  const baseMonth = useMemo(() => {
+    const firstSlot = normalized.find(Boolean)?._start
+    const d = firstSlot || new Date()
+    return new Date(d.getFullYear(), d.getMonth(), 1)
+  }, [normalized])
+
+  const monthDate = useMemo(() => new Date(baseMonth.getFullYear(), baseMonth.getMonth() + monthOffset, 1), [baseMonth, monthOffset])
+  const monthCells = useMemo(() => buildMonthCells(monthDate), [monthDate])
+
+  const slotsByDay = useMemo(() => {
+    const m = new Map()
+    for (const s of normalized) {
+      const k = dateKey(s._start)
+      if (!m.has(k)) m.set(k, [])
+      m.get(k).push(s)
+    }
+    return m
+  }, [normalized])
+
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div className="panelTitle">
+        <div style={{ fontWeight: 800 }}>Публичный календарь слотов</div>
+        <div className="small">Кликни на время, чтобы записаться</div>
+      </div>
+
+      <div className="calendarToolbar">
+        <button className="btn" onClick={() => setMonthOffset(v => v - 1)}>←</button>
+        <div style={{ fontWeight: 800 }}>
+          {monthDate.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}
+        </div>
+        <button className="btn" onClick={() => setMonthOffset(v => v + 1)}>→</button>
+      </div>
+
+      <div className="lessonCalendarGrid">
+        {weekdays.map(d => <div key={d} className="lessonCalendarHead">{d}</div>)}
+        {monthCells.map((d) => {
+          const key = dateKey(d)
+          const daySlots = slotsByDay.get(key) || []
+          const inMonth = d.getMonth() === monthDate.getMonth()
+          const isToday = key === dateKey(new Date())
+          return (
+            <div key={key} className={`lessonCalendarCell ${inMonth ? '' : 'out'} ${isToday ? 'today' : ''}`}>
+              <div className="lessonCalendarDate">{d.getDate()}</div>
+              <div className="lessonCalendarEvents">
+                {daySlots.slice(0, 3).map(s => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="lessonEvent"
+                    title={`${s._start.toLocaleString()}${s._end ? ` — ${s._end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`}
+                    onClick={() => onBook?.(s.id)}
+                    disabled={bookingId === s.id}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <span>{s._start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  </button>
+                ))}
+                {daySlots.length > 3 && <div className="lessonMore">+{daySlots.length - 3}</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function TutorProfile() {
   const { id } = useParams()
   const nav = useNavigate()
@@ -25,6 +124,7 @@ export default function TutorProfile() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [bookingId, setBookingId] = useState(null)
+  const [bookingSuccess, setBookingSuccess] = useState(null)
 
   useEffect(() => {
     let mounted = true
@@ -54,9 +154,17 @@ export default function TutorProfile() {
     if (me?.role === 'tutor') return setErr('Репетитор не может бронировать слоты. Войдите как ученик.')
     setBookingId(slotId)
     setErr('')
+    setBookingSuccess(null)
     try {
       const b = await apiFetch(`/api/slots/${slotId}/book`, { method: 'POST', token })
-      nav(`/room/${b.room_id}`)
+      setSlots(prev => (Array.isArray(prev) ? prev.filter(s => s.id !== slotId) : prev))
+      setBookingSuccess({
+        id: b.id,
+        room_id: b.room_id,
+        message: 'Бронь создана. Мы больше не перекидываем сразу в конференцию — зайди в “Кабинет → Занятия” и открой комнату в нужное время.'
+      })
+      // Переводим в кабинет, а не сразу в комнату урока.
+      nav('/dashboard')
     } catch (e) {
       setErr(e.message || 'Ошибка бронирования')
     } finally {
@@ -161,11 +269,20 @@ export default function TutorProfile() {
 
         <div className="card">
           <div className="panelTitle">
-            <div style={{ fontWeight: 900, fontSize: 18 }}>Свободные слоты</div>
+            <div style={{ fontWeight: 900, fontSize: 18 }}>Свободные слоты и календарь</div>
             <div className="small">{slots.length} доступно</div>
           </div>
 
-          <div className="grid" style={{ gap: 10 }}>
+          {tutor.public_schedule_note ? (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 800 }}>Ближайшие окна / пожелания по времени</div>
+              <div className="small" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{tutor.public_schedule_note}</div>
+            </div>
+          ) : null}
+
+          <PublicSlotsCalendar slots={slots} onBook={book} bookingId={bookingId} />
+
+          <div className="grid" style={{ gap: 10, marginTop: 12 }}>
             {slots.length === 0 ? (
               <div className="small">Пока нет открытых слотов.</div>
             ) : (
@@ -181,7 +298,12 @@ export default function TutorProfile() {
             )}
           </div>
 
-          <div className="footerNote">После брони откроется комната урока: созвон, чат и доска.</div>
+          <div className="footerNote">После брони комната урока создаётся, но вход в неё лучше делать из раздела “Занятия” в нужное время.</div>
+          {bookingSuccess && (
+            <div className="footerNote" style={{ color: 'var(--success)' }}>
+              {bookingSuccess.message}
+            </div>
+          )}
           {err && <div className="footerNote">{err}</div>}
         </div>
       </div>

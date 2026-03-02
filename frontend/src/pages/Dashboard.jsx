@@ -329,7 +329,8 @@ export default function Dashboard() {
         bio: profile.bio || '',
         video_url: profile.video_url || '',
         certificate_links: linesToList(certLinksText),
-        payment_method: profile.payment_method || ''
+        payment_method: profile.payment_method || '',
+        public_schedule_note: profile.public_schedule_note || ''
       }
       const updated = await apiFetch('/api/tutors/me', { method: 'PUT', token, body: payload })
       setProfile(updated)
@@ -634,6 +635,11 @@ export default function Dashboard() {
 
             <div className="label">Способ оплаты (показывается ученику только после брони — в комнате занятия)</div>
             <textarea className="textarea" value={profile.payment_method || ''} onChange={e => setProfile({ ...profile, payment_method: e.target.value })} placeholder="Оплата переводом на карту ... / ЕРИП / СБП..." />
+
+            <div className="label">Публичная заметка по ближайшим окнам / времени (видна в профиле)</div>
+            <textarea className="textarea" value={profile.public_schedule_note || ''} onChange={e => setProfile({ ...profile, public_schedule_note: e.target.value })} placeholder={`Например:
+Будни после 18:00, выходные — утром.
+Можно писать в чат для согласования времени.`} />
 
             <div className="card" style={{ marginTop: 12 }}>
               <div className="small">Статус модерации документов: <b>{profile.documents_status || 'draft'}</b></div>

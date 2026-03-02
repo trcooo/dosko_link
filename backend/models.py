@@ -54,6 +54,9 @@ class TutorProfile(SQLModel, table=True):
     # Payments "direct to tutor" (shown only after booking / in room)
     payment_method: str = Field(default="")
 
+    # Public schedule note (manual text in profile)
+    public_schedule_note: str = Field(default="")
+
     # Social proof
     rating_avg: float = Field(default=0)
     rating_count: int = Field(default=0)

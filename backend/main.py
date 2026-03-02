@@ -1360,6 +1360,7 @@ class TutorProfilePublicOut(BaseModel):
     language: str
     bio: str
     video_url: str
+    public_schedule_note: str = ""
     rating_avg: float
     rating_count: int
     lessons_count: int
@@ -1394,6 +1395,7 @@ def _profile_public_out(p: TutorProfile) -> TutorProfilePublicOut:
         language=p.language,
         bio=p.bio,
         video_url=p.video_url,
+        public_schedule_note=str(getattr(p, "public_schedule_note", "") or ""),
         rating_avg=p.rating_avg,
         rating_count=p.rating_count,
         lessons_count=int(getattr(p, "lessons_count", 0) or 0),
@@ -1626,6 +1628,7 @@ class TutorProfileUpdateIn(BaseModel):
 
     certificate_links: Optional[List[str]] = None
     payment_method: Optional[str] = None
+    public_schedule_note: Optional[str] = None
 
 
 @app.get("/api/tutors/me", response_model=TutorProfileMeOut)

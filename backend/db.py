@@ -66,6 +66,7 @@ def _ensure_schema() -> None:
         _exec('ALTER TABLE tutorprofile ADD COLUMN documents_status VARCHAR DEFAULT "draft"')
         _exec('ALTER TABLE tutorprofile ADD COLUMN documents_note VARCHAR DEFAULT ""')
         _exec('ALTER TABLE tutorprofile ADD COLUMN payment_method VARCHAR DEFAULT ""')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN public_schedule_note VARCHAR DEFAULT ""')
         _exec('ALTER TABLE tutorprofile ADD COLUMN lessons_count INTEGER DEFAULT 0')
         _exec('ALTER TABLE tutorprofile ADD COLUMN founding_tutor BOOLEAN DEFAULT 0')
 
@@ -95,6 +96,7 @@ def _ensure_schema() -> None:
         _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS documents_status VARCHAR DEFAULT 'draft'")
         _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS documents_note VARCHAR DEFAULT ''")
         _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS payment_method VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS public_schedule_note VARCHAR DEFAULT ''")
         _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS lessons_count INTEGER DEFAULT 0')
         _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS founding_tutor BOOLEAN DEFAULT FALSE')
 

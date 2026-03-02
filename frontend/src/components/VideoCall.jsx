@@ -3,7 +3,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 function wsBaseFromApi() {
   const env = (import.meta.env.VITE_API_BASE || '').trim()
   const isLocal = (typeof window !== 'undefined') && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-  const api = isLocal ? (env || 'http://localhost:8000') : window.location.origin
+  // Если VITE_API_BASE задан (например, фронт и бэк на разных Railway-доменах), используем его и для WS.
+  const api = env || (isLocal ? 'http://localhost:8000' : window.location.origin)
   return api.replace(/^http/, 'ws')
 }
 
@@ -26,9 +27,45 @@ export default function VideoCall({ roomId, token }) {
 
   async function ensureLocalMedia() {
     if (localStreamRef.current) return localStreamRef.current
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    if (!(typeof window !== 'undefined' && window.isSecureContext)) {
+      throw new Error('Созвон требует HTTPS (secure context)')
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Браузер не поддерживает доступ к камере/микрофону')
+    }
+
+    let stream = null
+    let lastErr = null
+    const variants = [
+      { video: true, audio: true, _label: 'video+audio' },
+      { video: true, audio: false, _label: 'video-only' },
+      { video: false, audio: true, _label: 'audio-only' }
+    ]
+    for (const constraints of variants) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: constraints.video, audio: constraints.audio })
+        if (constraints._label !== 'video+audio') {
+          setStatus(constraints._label === 'video-only'
+            ? 'Камера включена, микрофон недоступен'
+            : 'Микрофон включен, камера недоступна')
+        }
+        break
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    if (!stream) {
+      const name = lastErr?.name ? ` (${lastErr.name})` : ''
+      throw new Error(`Не удалось получить доступ к камере/микрофону${name}`)
+    }
+
     localStreamRef.current = stream
-    if (localVideoRef.current) localVideoRef.current.srcObject = stream
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream
+      try { localVideoRef.current.play?.() } catch {}
+    }
+    setMicOn((stream.getAudioTracks() || []).some(t => t.enabled))
+    setCamOn((stream.getVideoTracks() || []).some(t => t.enabled))
     return stream
   }
 
@@ -133,8 +170,9 @@ export default function VideoCall({ roomId, token }) {
   useEffect(() => {
     let stopped = false
 
-    start().catch(() => {
-      if (!stopped) setStatus('Не удалось запустить созвон (разреши доступ к камере/микрофону)')
+    start().catch((e) => {
+      const msg = e?.message || 'Не удалось запустить созвон'
+      if (!stopped) setStatus(msg.includes('разреш') ? msg : `${msg}. Разреши доступ к камере/микрофону в адресной строке браузера.`)
     })
 
     return () => {
