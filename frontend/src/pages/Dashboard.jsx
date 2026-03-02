@@ -18,6 +18,10 @@ function linesToList(v) {
     .filter(Boolean)
 }
 
+function listToLines(arr) {
+  return Array.isArray(arr) ? arr.filter(Boolean).join('\n') : ''
+}
+
 function listHas(arr) {
   return Array.isArray(arr) && arr.some(v => String(v || '').trim())
 }
@@ -43,6 +47,164 @@ function roleTitle(role) {
   if (role === 'student') return 'Кабинет ученика'
   if (role === 'admin') return 'Кабинет администратора'
   return 'Кабинет'
+}
+
+function bookingToCalendarEvent(b, meRole) {
+  const startsIso = b?.slot_starts_at
+  const endsIso = b?.slot_ends_at
+  if (!startsIso) return null
+  const start = new Date(startsIso)
+  if (Number.isNaN(start.getTime())) return null
+  const end = endsIso ? new Date(endsIso) : null
+  const counterpart = meRole === 'tutor' ? (b.student_user_email || `Ученик #${b.student_user_id || ''}`) : (b.tutor_name || b.tutor_user_email || `Репетитор #${b.tutor_user_id || ''}`)
+  return {
+    id: b.id,
+    roomId: b.room_id,
+    slotId: b.slot_id,
+    start,
+    end: end && !Number.isNaN(end.getTime()) ? end : null,
+    status: String(b.status || ''),
+    paymentStatus: String(b.payment_status || 'unpaid'),
+    counterpart,
+    raw: b
+  }
+}
+
+function formatDateKey(d) {
+  const dt = new Date(d)
+  const y = dt.getFullYear()
+  const m = String(dt.getMonth() + 1).padStart(2, '0')
+  const day = String(dt.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function formatTime(dt) {
+  return new Date(dt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function buildMonthCells(monthDate) {
+  const first = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
+  const startWeekday = (first.getDay() + 6) % 7 // Mon=0
+  const gridStart = new Date(first)
+  gridStart.setDate(first.getDate() - startWeekday)
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart)
+    d.setDate(gridStart.getDate() + i)
+    return d
+  })
+}
+
+function LessonsCalendarCard({ bookings, role, settings, balanceInfo }) {
+  const [monthOffset, setMonthOffset] = useState(0)
+
+  const events = useMemo(() => (Array.isArray(bookings) ? bookings : [])
+    .map(b => bookingToCalendarEvent(b, role))
+    .filter(Boolean)
+    .sort((a, b) => a.start - b.start), [bookings, role])
+
+  const baseMonth = useMemo(() => {
+    const d = new Date()
+    return new Date(d.getFullYear(), d.getMonth(), 1)
+  }, [])
+
+  const monthDate = useMemo(() => new Date(baseMonth.getFullYear(), baseMonth.getMonth() + monthOffset, 1), [baseMonth, monthOffset])
+
+  const eventsByDay = useMemo(() => {
+    const map = new Map()
+    for (const e of events) {
+      const key = formatDateKey(e.start)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(e)
+    }
+    return map
+  }, [events])
+
+  const monthCells = useMemo(() => buildMonthCells(monthDate), [monthDate])
+
+  const upcoming = useMemo(() => {
+    const now = Date.now()
+    return events.filter(e => e.start.getTime() >= now).slice(0, 8)
+  }, [events])
+
+  const paidEvents = useMemo(() => events.filter(e => e.paymentStatus === 'paid' && e.status !== 'cancelled'), [events])
+  const paidUntilDerived = useMemo(() => {
+    if (!paidEvents.length) return null
+    let latest = null
+    for (const e of paidEvents) {
+      const point = e.end || e.start
+      if (!latest || point > latest) latest = point
+    }
+    return latest
+  }, [paidEvents])
+
+  const paidUntil = settings?.paid_until || balanceInfo?.paid_until || (paidUntilDerived ? paidUntilDerived.toISOString() : null)
+  const paidUntilDate = paidUntil ? new Date(paidUntil) : null
+  const paidExpired = paidUntilDate ? paidUntilDate.getTime() < Date.now() : false
+
+  const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontWeight: 900, fontSize: 18 }}>Занятия · календарь</div>
+          <div className="sub">Время занятий и оплаченный период {role === 'tutor' ? 'по бронированиям ученика' : 'по твоим оплаченным бронированиям'}.</div>
+        </div>
+        <div className={`paidUntilPill ${paidUntil ? '' : 'muted'} ${paidExpired ? 'expired' : ''}`}>
+          <span>Оплачено до:</span>
+          <b>{paidUntilDate && !Number.isNaN(paidUntilDate.getTime()) ? paidUntilDate.toLocaleString() : '—'}</b>
+        </div>
+      </div>
+
+      <div className="calendarToolbar">
+        <button className="btn" onClick={() => setMonthOffset(v => v - 1)}>←</button>
+        <div style={{ fontWeight: 800 }}>
+          {monthDate.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}
+        </div>
+        <button className="btn" onClick={() => setMonthOffset(v => v + 1)}>→</button>
+      </div>
+
+      <div className="lessonCalendarGrid">
+        {weekdays.map(d => <div key={d} className="lessonCalendarHead">{d}</div>)}
+        {monthCells.map((d) => {
+          const key = formatDateKey(d)
+          const dayEvents = eventsByDay.get(key) || []
+          const inMonth = d.getMonth() === monthDate.getMonth()
+          const isToday = formatDateKey(d) === formatDateKey(new Date())
+          return (
+            <div key={key} className={`lessonCalendarCell ${inMonth ? '' : 'out'} ${isToday ? 'today' : ''}`}>
+              <div className="lessonCalendarDate">{d.getDate()}</div>
+              <div className="lessonCalendarEvents">
+                {dayEvents.slice(0, 3).map(ev => (
+                  <Link key={ev.id} to={`/room/${ev.roomId}`} className={`lessonEvent ${ev.paymentStatus === 'paid' ? 'paid' : ''} ${ev.status === 'cancelled' ? 'cancelled' : ''}`} title={`${formatTime(ev.start)} ${ev.counterpart || ''}`}>
+                    <span>{formatTime(ev.start)}</span>
+                  </Link>
+                ))}
+                {dayEvents.length > 3 && <div className="lessonMore">+{dayEvents.length - 3}</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <div className="label">Ближайшие занятия</div>
+        <div className="grid" style={{ gap: 8 }}>
+          {upcoming.length === 0 ? (
+            <div className="small">Нет ближайших занятий.</div>
+          ) : upcoming.map(ev => (
+            <div key={ev.id} className="lessonAgendaItem">
+              <div>
+                <div style={{ fontWeight: 800 }}>#{ev.id} • {ev.start.toLocaleDateString()} {formatTime(ev.start)}{ev.end ? `—${formatTime(ev.end)}` : ''}</div>
+                <div className="small">{ev.counterpart || 'Участник'} • статус: {ev.status} • оплата: {ev.paymentStatus}</div>
+              </div>
+              <Link className="btn" to={`/room/${ev.roomId}`}>Комната</Link>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function Dashboard() {
@@ -580,6 +742,8 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      <LessonsCalendarCard bookings={bookings} role={me.role} settings={settings} balanceInfo={balanceInfo} />
 
       <div className="card">
         <div style={{ fontWeight: 900, fontSize: 18 }}>Мои занятия (бронирования)</div>

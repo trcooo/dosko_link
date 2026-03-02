@@ -431,3 +431,100 @@ a{color:inherit; text-decoration:none}
   background:rgba(255,255,255,.9);
   padding:12px;
 }
+
+/* Lessons calendar */
+.calendarToolbar{
+  margin-top:12px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.paidUntilPill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 10px;
+  border-radius:999px;
+  border:1px solid rgba(34,197,94,.25);
+  background:rgba(34,197,94,.08);
+  color:#166534;
+  font-size:13px;
+}
+.paidUntilPill.muted{
+  border-color: rgba(229,231,235,.9);
+  background: rgba(255,255,255,.8);
+  color: var(--muted);
+}
+.paidUntilPill.expired{
+  border-color: rgba(239,68,68,.25);
+  background: rgba(239,68,68,.08);
+  color:#991b1b;
+}
+.lessonCalendarGrid{
+  margin-top:12px;
+  display:grid;
+  grid-template-columns: repeat(7, minmax(0,1fr));
+  gap:6px;
+}
+@media (max-width: 860px){
+  .lessonCalendarGrid{grid-template-columns: repeat(7, minmax(78px,1fr)); overflow-x:auto; padding-bottom:6px}
+}
+.lessonCalendarHead{
+  font-size:12px;
+  color:var(--muted);
+  text-align:center;
+  padding:4px;
+  font-weight:700;
+}
+.lessonCalendarCell{
+  min-height:84px;
+  border:1px solid rgba(229,231,235,.95);
+  border-radius:12px;
+  background:rgba(255,255,255,.9);
+  padding:6px;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.lessonCalendarCell.out{opacity:.55; background:rgba(249,250,251,.8)}
+.lessonCalendarCell.today{border-color: rgba(255,106,0,.35); box-shadow:0 0 0 2px rgba(255,106,0,.08) inset}
+.lessonCalendarDate{font-size:12px; font-weight:800}
+.lessonCalendarEvents{display:grid; gap:4px}
+.lessonEvent{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:20px;
+  border-radius:8px;
+  background:rgba(59,130,246,.1);
+  border:1px solid rgba(59,130,246,.25);
+  color:#1d4ed8;
+  font-size:11px;
+  font-weight:700;
+  text-decoration:none;
+}
+.lessonEvent.paid{
+  background:rgba(34,197,94,.1);
+  border-color:rgba(34,197,94,.25);
+  color:#166534;
+}
+.lessonEvent.cancelled{
+  background:rgba(239,68,68,.08);
+  border-color:rgba(239,68,68,.2);
+  color:#991b1b;
+  text-decoration:line-through;
+}
+.lessonMore{font-size:11px; color:var(--muted); text-align:center}
+.lessonAgendaItem{
+  border:1px solid rgba(229,231,235,.9);
+  border-radius:12px;
+  background:rgba(255,255,255,.9);
+  padding:10px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+}
