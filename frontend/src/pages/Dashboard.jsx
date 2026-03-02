@@ -11,6 +11,17 @@ function toLocalInputValue(d) {
   return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`
 }
 
+function linesToList(v) {
+  return String(v || '')
+    .split(/\r?\n/)
+    .map(x => x.trim())
+    .filter(Boolean)
+}
+
+function listToLines(arr) {
+  return Array.isArray(arr) ? arr.join('\n') : ''
+}
+
 export default function Dashboard() {
   const { me, token, loading: authLoading, logout, balanceInfo, payBooking, refreshBalance } = useAuth()
   const nav = useNavigate()
@@ -34,9 +45,16 @@ export default function Dashboard() {
   const [reviewBookingId, setReviewBookingId] = useState(null)
   const [rescheduleBooking, setRescheduleBooking] = useState(null)
 
-  const subjectOptions = useMemo(() => [
-    'математика', 'английский', 'физика', 'химия', 'русский', 'программирование'
-  ], [])
+  const [catalog, setCatalog] = useState({ subjects: [], goals: [], levels: [], grades: [], languages: ['ru', 'en'] })
+  const [backgroundsText, setBackgroundsText] = useState('')
+  const [certLinksText, setCertLinksText] = useState('')
+
+  const subjectOptions = useMemo(() => (catalog.subjects?.length ? catalog.subjects : [
+    'Математика', 'Английский', 'Физика', 'Химия', 'Русский язык', 'Программирование'
+  ]), [catalog])
+  const goalOptions = useMemo(() => catalog.goals || [], [catalog])
+  const levelOptions = useMemo(() => catalog.levels || [], [catalog])
+  const gradeOptions = useMemo(() => catalog.grades || [], [catalog])
 
   useEffect(() => {
     if (authLoading) return
@@ -68,6 +86,11 @@ export default function Dashboard() {
       const st = await apiFetch('/api/me/settings', { token })
       setSettings(st || null)
 
+      try {
+        const c = await apiFetch('/api/catalog')
+        setCatalog(c || { subjects: [], goals: [], levels: [], grades: [], languages: ['ru', 'en'] })
+      } catch {}
+
       if (me.role === 'tutor') {
         const p = await apiFetch('/api/tutors/me', { token })
         setProfile(p)
@@ -85,19 +108,32 @@ export default function Dashboard() {
 
   useEffect(() => { load() }, [token, me])
 
+  useEffect(() => {
+    if (!profile) return
+    setBackgroundsText(listToLines(profile.backgrounds || []))
+    setCertLinksText(listToLines(profile.certificate_links || []))
+  }, [profile?.id, JSON.stringify(profile?.backgrounds || []), JSON.stringify(profile?.certificate_links || [])])
+
   async function saveProfile() {
     setSaving(true)
     setErr('')
     try {
       const payload = {
         display_name: profile.display_name,
-        subjects: profile.subjects,
-        levels: profile.levels,
-        goals: profile.goals,
+        photo_url: profile.photo_url || '',
+        age: profile.age ? Number(profile.age) : null,
+        education: profile.education || '',
+        backgrounds: linesToList(backgroundsText),
+        grades: profile.grades || [],
+        subjects: profile.subjects || [],
+        levels: profile.levels || [],
+        goals: profile.goals || [],
         price_per_hour: Number(profile.price_per_hour || 0),
-        language: profile.language,
-        bio: profile.bio,
-        video_url: profile.video_url
+        language: profile.language || 'ru',
+        bio: profile.bio || '',
+        video_url: profile.video_url || '',
+        certificate_links: linesToList(certLinksText),
+        payment_method: profile.payment_method || ''
       }
       const updated = await apiFetch('/api/tutors/me', { method: 'PUT', token, body: payload })
       setProfile(updated)
@@ -116,6 +152,19 @@ export default function Dashboard() {
       setProfile(updated)
     } catch (e) {
       setErr(e.message || 'Ошибка публикации')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function submitForModeration() {
+    setSaving(true)
+    setErr('')
+    try {
+      const updated = await apiFetch('/api/tutors/me/submit', { method: 'POST', token })
+      setProfile(updated)
+    } catch (e) {
+      setErr(e.message || 'Ошибка отправки на модерацию')
     } finally {
       setSaving(false)
     }
@@ -243,44 +292,96 @@ export default function Dashboard() {
         <div className="split">
           <div className="card">
             <div style={{ fontWeight: 900, fontSize: 18 }}>Профиль репетитора</div>
-            <div className="sub">Заполни и опубликуй профиль — тогда он появится в поиске.</div>
+            <div className="sub">Фото, предметы, классы, сертификаты (ссылки на Google Drive/облако) и реквизиты для оплаты напрямую.</div>
 
-            <div className="label">Имя</div>
-            <input className="input" value={profile.display_name || ''} onChange={e => setProfile({ ...profile, display_name: e.target.value })} />
+            <div className="row" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div className="label">Имя</div>
+                <input className="input" value={profile.display_name || ''} onChange={e => setProfile({ ...profile, display_name: e.target.value })} />
+              </div>
+              <div style={{ width: 150 }}>
+                <div className="label">Возраст</div>
+                <input className="input" type="number" min="14" max="99" value={profile.age || ''} onChange={e => setProfile({ ...profile, age: e.target.value })} />
+              </div>
+            </div>
 
-            <div className="row">
-              <div style={{ flex: 1 }}>
-                <div className="label">Предметы (выбери несколько)</div>
-                <select className="select" multiple value={profile.subjects || []} onChange={e => {
-                  const vals = Array.from(e.target.selectedOptions).map(o => o.value)
-                  setProfile({ ...profile, subjects: vals })
-                }}>
+            <div className="label">Фото (URL)</div>
+            <input className="input" value={profile.photo_url || ''} onChange={e => setProfile({ ...profile, photo_url: e.target.value })} placeholder="https://..." />
+
+            <div className="row" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div className="label">Предметы (multi-select)</div>
+                <select className="select" multiple value={profile.subjects || []} onChange={e => setProfile({ ...profile, subjects: Array.from(e.target.selectedOptions).map(o => o.value) })}>
                   {subjectOptions.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
-                <div className="small" style={{ marginTop: 6 }}>Ctrl/⌘ + клик — мультивыбор</div>
               </div>
-              <div style={{ width: 220 }}>
-                <div className="label">Цена / час</div>
-                <input className="input" type="number" value={profile.price_per_hour || 0} onChange={e => setProfile({ ...profile, price_per_hour: e.target.value })} />
-
-                <div className="label">Язык</div>
-                <select className="select" value={profile.language || 'ru'} onChange={e => setProfile({ ...profile, language: e.target.value })}>
-                  <option value="ru">ru</option>
-                  <option value="en">en</option>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div className="label">Цели (multi-select)</div>
+                <select className="select" multiple value={profile.goals || []} onChange={e => setProfile({ ...profile, goals: Array.from(e.target.selectedOptions).map(o => o.value) })}>
+                  {goalOptions.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
             </div>
 
+            <div className="row" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div className="label">Уровни (multi-select)</div>
+                <select className="select" multiple value={profile.levels || []} onChange={e => setProfile({ ...profile, levels: Array.from(e.target.selectedOptions).map(o => o.value) })}>
+                  {levelOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div className="label">С какими классами работает (multi-select)</div>
+                <select className="select" multiple value={profile.grades || []} onChange={e => setProfile({ ...profile, grades: Array.from(e.target.selectedOptions).map(o => o.value) })}>
+                  {gradeOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="small" style={{ marginTop: 6 }}>Ctrl/⌘ + клик — мультивыбор.</div>
+
+            <div className="row">
+              <div style={{ flex: 1 }}>
+                <div className="label">Цена / час</div>
+                <input className="input" type="number" value={profile.price_per_hour || 0} onChange={e => setProfile({ ...profile, price_per_hour: e.target.value })} />
+              </div>
+              <div style={{ width: 180 }}>
+                <div className="label">Язык</div>
+                <select className="select" value={profile.language || 'ru'} onChange={e => setProfile({ ...profile, language: e.target.value })}>
+                  {(catalog.languages?.length ? catalog.languages : ['ru', 'en']).map(l => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="label">Образование</div>
+            <textarea className="textarea" value={profile.education || ''} onChange={e => setProfile({ ...profile, education: e.target.value })} placeholder="ВУЗ, факультет, курсы, сертификаты" />
+
             <div className="label">О себе</div>
-            <textarea className="textarea" value={profile.bio || ''} onChange={e => setProfile({ ...profile, bio: e.target.value })} placeholder="Коротко: опыт, результаты, методика…" />
+            <textarea className="textarea" value={profile.bio || ''} onChange={e => setProfile({ ...profile, bio: e.target.value })} placeholder="Опыт, подход, результаты учеников…" />
+
+            <div className="label">Бекграунды / опыт (каждый пункт с новой строки)</div>
+            <textarea className="textarea" value={backgroundsText} onChange={e => setBackgroundsText(e.target.value)} placeholder={'5 лет подготовки к ЕГЭ\n100+ учеников\nПреподавал в ...'} />
 
             <div className="label">Видео-визитка (URL)</div>
             <input className="input" value={profile.video_url || ''} onChange={e => setProfile({ ...profile, video_url: e.target.value })} placeholder="https://…" />
 
+            <div className="label">Ссылки на сертификаты/дипломы (Google Drive/облако, по одной на строку)</div>
+            <textarea className="textarea" value={certLinksText} onChange={e => setCertLinksText(e.target.value)} placeholder={'https://drive.google.com/...\nhttps://dropbox.com/...'} />
+
+            <div className="label">Способ оплаты (показывается ученику только после брони — в комнате занятия)</div>
+            <textarea className="textarea" value={profile.payment_method || ''} onChange={e => setProfile({ ...profile, payment_method: e.target.value })} placeholder="Оплата переводом на карту ... / ЕРИП / СБП..." />
+
+            <div className="card" style={{ marginTop: 12 }}>
+              <div className="small">Статус модерации документов: <b>{profile.documents_status || 'draft'}</b></div>
+              {profile.documents_note ? <div className="small" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>Комментарий админа: {profile.documents_note}</div> : null}
+              <div className="small" style={{ marginTop: 6 }}>
+                {profile.founding_tutor ? 'Founding tutor активен.' : 'Founding tutor может выдать админ.'} Рейтинг: ★ {Number(profile.rating_avg || 0).toFixed(1)} ({profile.rating_count || 0}) • занятий: {profile.lessons_count || 0}
+              </div>
+            </div>
+
             <div style={{ display: 'flex', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
-              <button className="btn btnPrimary" onClick={saveProfile} disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить'}</button>
+              <button className="btn btnPrimary" onClick={saveProfile} disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить профиль'}</button>
+              <button className="btn" onClick={submitForModeration} disabled={saving}>Отправить на модерацию</button>
               <button className="btn" onClick={publishProfile} disabled={saving}>{profile.is_published ? 'Опубликовано' : 'Опубликовать'}</button>
-              <div className="small" style={{ alignSelf: 'center' }}>Рейтинг: ★ {Number(profile.rating_avg || 0).toFixed(1)} ({profile.rating_count || 0})</div>
             </div>
           </div>
 
@@ -301,7 +402,7 @@ export default function Dashboard() {
               {slots.length === 0 ? (
                 <div className="small">Пока нет открытых слотов.</div>
               ) : (
-                slots.slice(0, 10).map(s => (
+                slots.slice(0, 20).map(s => (
                   <div key={s.id} className="card">
                     <div style={{ fontWeight: 800 }}>#{s.id} • {new Date(s.starts_at).toLocaleString()}</div>
                     <div className="small">до {new Date(s.ends_at).toLocaleString()} • статус: {s.status}</div>
@@ -314,6 +415,7 @@ export default function Dashboard() {
       )}
 
       {settings && (
+
         <div className="card">
           <div style={{ fontWeight: 900, fontSize: 18 }}>Уведомления</div>
           <div className="sub">В MVP уведомления приходят по email (если настроен SMTP) и/или в Telegram (если привязать chat_id).</div>

@@ -40,6 +40,7 @@ from models import (
     Slot,
     TopicProgress,
     TutorProfile,
+    PlatformCatalog,
     User,
     StudyPlan,
     PlanItem,
@@ -50,7 +51,7 @@ from models import (
     QuizAttempt,
 )
 
-app = FastAPI(title="DL MVP API", version="0.6.4")
+app = FastAPI(title="DL MVP API", version="0.7.0")
 
 # -----------------
 # CORS
@@ -513,7 +514,7 @@ def topup_balance(payload: TopUpIn, user: User = Depends(get_current_user), sess
 
 class PayOut(BaseModel):
     ok: bool = True
-    booking: BookingOut
+    booking: Dict[str, Any]
     balance: int
     earnings: int
 
@@ -720,26 +721,43 @@ class AdminTutorOut(BaseModel):
     user_id: int
     email: str
     display_name: str
+    photo_url: str
+    subjects: List[str]
+    goals: List[str]
+    price_per_hour: int
+    language: str
     is_published: bool
+    founding_tutor: bool
+    documents_status: str
+    documents_note: str
+    certificate_links: List[str]
     updated_at: datetime
     rating_avg: float
     rating_count: int
+    lessons_count: int
 
 
 class AdminTutorUpdateIn(BaseModel):
     is_published: Optional[bool] = None
     display_name: Optional[str] = None
+    photo_url: Optional[str] = None
+    founding_tutor: Optional[bool] = None
+    documents_status: Optional[str] = None  # draft|pending|approved|rejected
+    documents_note: Optional[str] = None
 
 
 @app.get("/api/admin/tutors", response_model=List[AdminTutorOut])
 def admin_list_tutors(
     only_pending: bool = False,
+    status: Optional[str] = None,
     _: User = Depends(require_role("admin")),
     session: Session = Depends(get_session),
 ):
     stmt = select(TutorProfile)
     if only_pending:
-        stmt = stmt.where(TutorProfile.is_published == False)  # noqa: E712
+        stmt = stmt.where(TutorProfile.documents_status == "pending")
+    if status:
+        stmt = stmt.where(TutorProfile.documents_status == status)
     profiles = session.exec(stmt.order_by(TutorProfile.updated_at.desc())).all()
 
     # map user emails
@@ -753,10 +771,20 @@ def admin_list_tutors(
             user_id=p.user_id,
             email=email_map.get(p.user_id, ""),
             display_name=p.display_name,
-            is_published=p.is_published,
+            photo_url=str(getattr(p, "photo_url", "") or ""),
+            subjects=_loads_list(getattr(p, "subjects_json", "[]")),
+            goals=_loads_list(getattr(p, "goals_json", "[]")),
+            price_per_hour=int(getattr(p, "price_per_hour", 0) or 0),
+            language=str(getattr(p, "language", "") or "ru"),
+            is_published=bool(getattr(p, "is_published", False)),
+            founding_tutor=bool(getattr(p, "founding_tutor", False)),
+            documents_status=str(getattr(p, "documents_status", "") or "draft"),
+            documents_note=str(getattr(p, "documents_note", "") or ""),
+            certificate_links=_loads_list(getattr(p, "certificate_links_json", "[]")),
             updated_at=p.updated_at,
-            rating_avg=p.rating_avg,
-            rating_count=p.rating_count,
+            rating_avg=float(getattr(p, "rating_avg", 0) or 0),
+            rating_count=int(getattr(p, "rating_count", 0) or 0),
+            lessons_count=int(getattr(p, "lessons_count", 0) or 0),
         )
         for p in profiles
     ]
@@ -772,18 +800,158 @@ def admin_update_tutor(
     p = session.get(TutorProfile, profile_id)
     if not p:
         raise HTTPException(404, "profile not found")
+
     data = payload.model_dump(exclude_unset=True)
+
     if "is_published" in data:
         p.is_published = bool(data["is_published"])
+
     if "display_name" in data and data["display_name"] is not None:
         p.display_name = str(data["display_name"])[:80]
+
+    if "photo_url" in data and data["photo_url"] is not None:
+        p.photo_url = str(data["photo_url"])[:500]
+
+    if "founding_tutor" in data:
+        p.founding_tutor = bool(data["founding_tutor"])
+
+    if "documents_status" in data and data["documents_status"] is not None:
+        ds = str(data["documents_status"]).strip().lower()
+        if ds not in {"draft", "pending", "approved", "rejected"}:
+            raise HTTPException(400, "bad documents_status")
+        p.documents_status = ds
+
+    if "documents_note" in data and data["documents_note"] is not None:
+        p.documents_note = str(data["documents_note"])[:4000]
+
     p.updated_at = datetime.utcnow()
 
     session.add(p)
     session.commit()
     session.refresh(p)
-    return {"ok": True, "id": p.id, "is_published": p.is_published, "display_name": p.display_name}
+    return {"ok": True, "id": p.id, "documents_status": getattr(p, "documents_status", "draft"), "is_published": p.is_published}
 
+
+
+# -----------------
+# Admin: catalog (subjects/goals/levels/grades/...)
+# -----------------
+
+
+class AdminCatalogOut(BaseModel):
+    id: int
+    kind: str
+    value: str
+    is_active: bool
+    order_index: int
+
+
+class AdminCatalogIn(BaseModel):
+    kind: str
+    value: str
+    is_active: bool = True
+    order_index: int = 0
+
+
+class AdminCatalogPatch(BaseModel):
+    value: Optional[str] = None
+    is_active: Optional[bool] = None
+    order_index: Optional[int] = None
+
+
+@app.get("/api/admin/catalog", response_model=List[AdminCatalogOut])
+def admin_list_catalog(
+    kind: Optional[str] = None,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    stmt = select(PlatformCatalog)
+    if kind:
+        stmt = stmt.where(PlatformCatalog.kind == kind)
+    items = session.exec(stmt.order_by(PlatformCatalog.kind.asc(), PlatformCatalog.order_index.asc(), PlatformCatalog.id.asc())).all()
+    return [
+        AdminCatalogOut(
+            id=i.id,
+            kind=i.kind,
+            value=i.value,
+            is_active=bool(i.is_active),
+            order_index=int(getattr(i, "order_index", 0) or 0),
+        )
+        for i in items
+    ]
+
+
+@app.post("/api/admin/catalog", response_model=AdminCatalogOut)
+def admin_create_catalog_item(
+    payload: AdminCatalogIn,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    kind = (payload.kind or "").strip().lower()
+    value = (payload.value or "").strip()
+    if not kind or not value:
+        raise HTTPException(400, "kind and value required")
+    if kind not in {"subject", "goal", "level", "grade", "language", "exam"}:
+        raise HTTPException(400, "bad kind")
+
+    # avoid duplicates
+    existing = session.exec(
+        select(PlatformCatalog)
+        .where(PlatformCatalog.kind == kind)
+        .where(PlatformCatalog.value == value)
+        .limit(1)
+    ).first()
+    if existing:
+        existing.is_active = bool(payload.is_active)
+        existing.order_index = int(payload.order_index or 0)
+        session.add(existing)
+        session.commit()
+        session.refresh(existing)
+        return AdminCatalogOut(id=existing.id, kind=existing.kind, value=existing.value, is_active=existing.is_active, order_index=existing.order_index)
+
+    item = PlatformCatalog(kind=kind, value=value, is_active=bool(payload.is_active), order_index=int(payload.order_index or 0))
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return AdminCatalogOut(id=item.id, kind=item.kind, value=item.value, is_active=item.is_active, order_index=item.order_index)
+
+
+@app.patch("/api/admin/catalog/{item_id}", response_model=AdminCatalogOut)
+def admin_patch_catalog_item(
+    item_id: int,
+    payload: AdminCatalogPatch,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    item = session.get(PlatformCatalog, item_id)
+    if not item:
+        raise HTTPException(404, "not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    if "value" in data and data["value"] is not None:
+        item.value = str(data["value"]).strip()[:200]
+    if "is_active" in data:
+        item.is_active = bool(data["is_active"])
+    if "order_index" in data and data["order_index"] is not None:
+        item.order_index = int(data["order_index"])
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return AdminCatalogOut(id=item.id, kind=item.kind, value=item.value, is_active=item.is_active, order_index=item.order_index)
+
+
+@app.delete("/api/admin/catalog/{item_id}")
+def admin_delete_catalog_item(
+    item_id: int,
+    _: User = Depends(require_role("admin")),
+    session: Session = Depends(get_session),
+):
+    item = session.get(PlatformCatalog, item_id)
+    if not item:
+        raise HTTPException(404, "not found")
+    session.delete(item)
+    session.commit()
+    return {"ok": True}
 
 @app.get("/api/admin/overview")
 def admin_overview(
@@ -1176,10 +1344,15 @@ def admin_patch_report(
 # -----------------
 
 
-class TutorProfileOut(BaseModel):
+class TutorProfilePublicOut(BaseModel):
     id: int
     user_id: int
     display_name: str
+    photo_url: str = ""
+    age: Optional[int] = None
+    education: str = ""
+    backgrounds: List[str]
+    grades: List[str]
     subjects: List[str]
     levels: List[str]
     goals: List[str]
@@ -1189,14 +1362,31 @@ class TutorProfileOut(BaseModel):
     video_url: str
     rating_avg: float
     rating_count: int
+    lessons_count: int
+    founding_tutor: bool
+    is_verified: bool
     is_published: bool
 
 
-def _profile_to_out(p: TutorProfile) -> TutorProfileOut:
-    return TutorProfileOut(
+class TutorProfileMeOut(TutorProfilePublicOut):
+    certificate_links: List[str]
+    documents_status: str
+    documents_note: str
+    payment_method: str
+
+
+def _profile_public_out(p: TutorProfile) -> TutorProfilePublicOut:
+    docs_status = str(getattr(p, "documents_status", "") or "")
+    is_verified = docs_status == "approved" or docs_status in {"", "draft"}  # backward compatible
+    return TutorProfilePublicOut(
         id=p.id,
         user_id=p.user_id,
         display_name=p.display_name,
+        photo_url=str(getattr(p, "photo_url", "") or ""),
+        age=getattr(p, "age", None),
+        education=str(getattr(p, "education", "") or ""),
+        backgrounds=_loads_list(getattr(p, "backgrounds_json", "[]")),
+        grades=_loads_list(getattr(p, "grades_json", "[]")),
         subjects=_loads_list(p.subjects_json),
         levels=_loads_list(p.levels_json),
         goals=_loads_list(p.goals_json),
@@ -1206,55 +1396,203 @@ def _profile_to_out(p: TutorProfile) -> TutorProfileOut:
         video_url=p.video_url,
         rating_avg=p.rating_avg,
         rating_count=p.rating_count,
+        lessons_count=int(getattr(p, "lessons_count", 0) or 0),
+        founding_tutor=bool(getattr(p, "founding_tutor", False)),
+        is_verified=bool(is_verified),
         is_published=p.is_published,
     )
 
 
-@app.get("/api/tutors", response_model=List[TutorProfileOut])
+def _profile_me_out(p: TutorProfile) -> TutorProfileMeOut:
+    base = _profile_public_out(p).model_dump()
+    return TutorProfileMeOut(
+        **base,
+        certificate_links=_loads_list(getattr(p, "certificate_links_json", "[]")),
+        documents_status=str(getattr(p, "documents_status", "") or "draft"),
+        documents_note=str(getattr(p, "documents_note", "") or ""),
+        payment_method=str(getattr(p, "payment_method", "") or ""),
+    )
+
+
+_DEFAULT_CATALOG = {
+    "subjects": ["Математика", "Английский", "Физика", "Химия", "Русский язык", "Информатика", "Программирование"],
+    "goals": ["ЕГЭ", "ОГЭ", "ЦТ", "ЦЭ", "Разговорный", "IELTS", "Подтянуть оценки"],
+    "levels": ["1-4 класс", "5-9 класс", "10-11 класс", "A1", "A2", "B1", "B2", "C1"],
+    "grades": [str(i) for i in range(1, 12)],
+    "languages": ["ru", "en"],
+    "exams": ["ЦТ", "ЦЭ", "ОГЭ", "ЕГЭ"],
+}
+
+
+@app.get("/api/catalog")
+def get_catalog(session: Session = Depends(get_session)):
+    """Public catalog for UI filters. Admin can manage via /api/admin/catalog."""
+    rows = session.exec(select(PlatformCatalog).where(PlatformCatalog.is_active == True)).all()  # noqa
+    by_kind: Dict[str, List[PlatformCatalog]] = {}
+    for r in rows:
+        by_kind.setdefault(r.kind, []).append(r)
+
+    def _vals(kind: str, fallback_key: str):
+        items = sorted(by_kind.get(kind, []), key=lambda x: (int(getattr(x, "order_index", 0) or 0), x.id or 0))
+        if items:
+            return [x.value for x in items]
+        return list(_DEFAULT_CATALOG.get(fallback_key, []))
+
+    return {
+        "subjects": _vals("subject", "subjects"),
+        "goals": _vals("goal", "goals"),
+        "levels": _vals("level", "levels"),
+        "grades": _vals("grade", "grades"),
+        "languages": _vals("language", "languages"),
+        "exams": _vals("exam", "exams"),
+    }
+
+
+@app.get("/api/tutors", response_model=List[TutorProfilePublicOut])
 def list_tutors(
     q: Optional[str] = None,
     subject: Optional[str] = None,
+    goal: Optional[str] = None,
+    level: Optional[str] = None,
+    grade: Optional[str] = None,
+    language: Optional[str] = None,
+    min_price: Optional[int] = None,
+    max_price: Optional[int] = None,
+    has_free_slots: bool = False,
+    available_from: Optional[datetime] = None,
+    available_to: Optional[datetime] = None,
+    sort: str = "best",  # best|price_asc|price_desc|newest
     session: Session = Depends(get_session),
 ):
-    tutors = session.exec(select(TutorProfile).where(TutorProfile.is_published == True)).all()  # noqa
+    # Visible: published + not pending/rejected moderation
+    profiles = session.exec(select(TutorProfile).where(TutorProfile.is_published == True)).all()  # noqa
 
     needle = (q or "").strip().lower()
     subj = (subject or "").strip().lower()
+    go = (goal or "").strip().lower()
+    lev = (level or "").strip().lower()
+    grd = (grade or "").strip().lower()
+    lang = (language or "").strip().lower()
+
+    # Slots filter (optional)
+    available_tutor_ids: Optional[set[int]] = None
+    if has_free_slots or available_from or available_to:
+        st = select(Slot.tutor_user_id).where(Slot.status == "open")
+        if available_from:
+            st = st.where(Slot.starts_at >= available_from)
+        if available_to:
+            st = st.where(Slot.starts_at <= available_to)
+        ids = session.exec(st).all()
+        available_tutor_ids = set(int(x) for x in ids if x is not None)
+
+    def _list_lower(lst: List[str]) -> List[str]:
+        return [str(x).strip().lower() for x in (lst or []) if str(x).strip()]
+
+    def _visible_status(p: TutorProfile) -> bool:
+        ds = str(getattr(p, "documents_status", "") or "")
+        # backward compatible: empty/draft -> visible; pending/rejected -> hidden
+        return ds not in {"pending", "rejected"}
 
     def match(p: TutorProfile) -> bool:
-        subjects = [str(x).lower() for x in _loads_list(p.subjects_json)]
-        text = (p.display_name + " " + p.bio).lower()
+        if not _visible_status(p):
+            return False
+
+        if available_tutor_ids is not None and int(p.user_id) not in available_tutor_ids:
+            return False
+
+        subjects = _list_lower(_loads_list(p.subjects_json))
+        goals = _list_lower(_loads_list(p.goals_json))
+        levels = _list_lower(_loads_list(p.levels_json))
+        grades = _list_lower(_loads_list(getattr(p, "grades_json", "[]")))
 
         if subj and subj not in subjects:
             return False
-        if needle and needle not in text and all(needle not in s for s in subjects):
+        if go and go not in goals:
             return False
+        if lev and lev not in levels:
+            return False
+        if grd and grd not in grades:
+            return False
+
+        if lang and str(getattr(p, "language", "") or "").strip().lower() != lang:
+            return False
+
+        price = int(getattr(p, "price_per_hour", 0) or 0)
+        if min_price is not None and price < int(min_price):
+            return False
+        if max_price is not None and price > int(max_price):
+            return False
+
+        if needle:
+            text = " ".join([
+                str(getattr(p, "display_name", "") or ""),
+                str(getattr(p, "bio", "") or ""),
+                str(getattr(p, "education", "") or ""),
+                " ".join(_loads_list(getattr(p, "backgrounds_json", "[]"))),
+                " ".join(subjects),
+                " ".join(goals),
+                " ".join(levels),
+                " ".join(grades),
+            ]).lower()
+            if needle not in text:
+                return False
+
         return True
 
-    filtered = [p for p in tutors if match(p)]
-    return [_profile_to_out(p) for p in filtered]
+    filtered = [p for p in profiles if match(p)]
+
+    def sort_key(p: TutorProfile):
+        price = int(getattr(p, "price_per_hour", 0) or 0)
+        rating = float(getattr(p, "rating_avg", 0) or 0)
+        rc = int(getattr(p, "rating_count", 0) or 0)
+        lc = int(getattr(p, "lessons_count", 0) or 0)
+        upd = getattr(p, "updated_at", datetime.utcnow())
+        if sort == "price_asc":
+            return (price, -rating, -rc, -lc, -upd.timestamp())
+        if sort == "price_desc":
+            return (-price, -rating, -rc, -lc, -upd.timestamp())
+        if sort == "newest":
+            return (-upd.timestamp(), -rating, -rc, -lc, price)
+        # best
+        return (-rating, -rc, -lc, price, -upd.timestamp())
+
+    filtered.sort(key=sort_key)
+    return [_profile_public_out(p) for p in filtered]
 
 
-@app.get("/api/tutors/{profile_id}", response_model=TutorProfileOut)
+@app.get("/api/tutors/{profile_id}", response_model=TutorProfilePublicOut)
 def get_tutor(profile_id: int, session: Session = Depends(get_session)):
     p = session.get(TutorProfile, profile_id)
     if not p or not p.is_published:
         raise HTTPException(404, "tutor not found")
-    return _profile_to_out(p)
+    ds = str(getattr(p, "documents_status", "") or "")
+    if ds in {"pending", "rejected"}:
+        raise HTTPException(404, "tutor not found")
+    return _profile_public_out(p)
 
 
 class TutorProfileUpdateIn(BaseModel):
     display_name: Optional[str] = None
+    photo_url: Optional[str] = None
+    age: Optional[int] = None
+    education: Optional[str] = None
+    backgrounds: Optional[List[str]] = None
+    grades: Optional[List[str]] = None
+
     subjects: Optional[List[str]] = None
     levels: Optional[List[str]] = None
     goals: Optional[List[str]] = None
+
     price_per_hour: Optional[int] = None
     language: Optional[str] = None
     bio: Optional[str] = None
     video_url: Optional[str] = None
 
+    certificate_links: Optional[List[str]] = None
+    payment_method: Optional[str] = None
 
-@app.get("/api/tutors/me", response_model=TutorProfileOut)
+
+@app.get("/api/tutors/me", response_model=TutorProfileMeOut)
 def get_my_profile(
     user: User = Depends(require_role("tutor", "admin")),
     session: Session = Depends(get_session),
@@ -1262,10 +1600,10 @@ def get_my_profile(
     p = session.exec(select(TutorProfile).where(TutorProfile.user_id == user.id)).first()
     if not p:
         raise HTTPException(404, "profile not found")
-    return _profile_to_out(p)
+    return _profile_me_out(p)
 
 
-@app.put("/api/tutors/me", response_model=TutorProfileOut)
+@app.put("/api/tutors/me", response_model=TutorProfileMeOut)
 def update_my_profile(
     payload: TutorProfileUpdateIn,
     user: User = Depends(require_role("tutor", "admin")),
@@ -1276,24 +1614,57 @@ def update_my_profile(
         raise HTTPException(404, "profile not found")
 
     data = payload.model_dump(exclude_unset=True)
-    if "subjects" in data:
-        p.subjects_json = json.dumps(data.pop("subjects"))
-    if "levels" in data:
-        p.levels_json = json.dumps(data.pop("levels"))
-    if "goals" in data:
-        p.goals_json = json.dumps(data.pop("goals"))
 
+    # JSON lists
+    for key, attr in [
+        ("subjects", "subjects_json"),
+        ("levels", "levels_json"),
+        ("goals", "goals_json"),
+        ("backgrounds", "backgrounds_json"),
+        ("grades", "grades_json"),
+        ("certificate_links", "certificate_links_json"),
+    ]:
+        if key in data:
+            setattr(p, attr, json.dumps(data.pop(key) or [], ensure_ascii=False))
+
+    # primitives
     for k, v in data.items():
+        if k == "age" and v is not None:
+            try:
+                v = int(v)
+                if v < 10 or v > 120:
+                    v = None
+            except Exception:
+                v = None
         setattr(p, k, v)
 
+    p.updated_at = datetime.utcnow()
+
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _profile_me_out(p)
+
+
+@app.post("/api/tutors/me/submit", response_model=TutorProfileMeOut)
+def submit_profile_for_moderation(
+    user: User = Depends(require_role("tutor", "admin")),
+    session: Session = Depends(get_session),
+):
+    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == user.id)).first()
+    if not p:
+        raise HTTPException(404, "profile not found")
+
+    p.documents_status = "pending"
+    p.documents_note = ""
     p.updated_at = datetime.utcnow()
     session.add(p)
     session.commit()
     session.refresh(p)
-    return _profile_to_out(p)
+    return _profile_me_out(p)
 
 
-@app.post("/api/tutors/me/publish", response_model=TutorProfileOut)
+@app.post("/api/tutors/me/publish", response_model=TutorProfileMeOut)
 def publish_my_profile(
     user: User = Depends(require_role("tutor", "admin")),
     session: Session = Depends(get_session),
@@ -1303,15 +1674,20 @@ def publish_my_profile(
         raise HTTPException(404, "profile not found")
 
     p.is_published = True
+    # if not approved yet -> pending moderation
+    ds = str(getattr(p, "documents_status", "") or "draft")
+    if ds != "approved":
+        p.documents_status = "pending"
     p.updated_at = datetime.utcnow()
     session.add(p)
     session.commit()
     session.refresh(p)
-    return _profile_to_out(p)
+    return _profile_me_out(p)
 
 
 # -----------------
 # Slots + Bookings
+
 # -----------------
 
 
@@ -1506,6 +1882,14 @@ def complete_booking(
 
     booking.status = "done"  # keep MVP schema: confirmed|cancelled|done
     session.add(booking)
+
+    # update tutor profile counter (best-effort)
+    prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == booking.tutor_user_id)).first()
+    if prof:
+        prof.lessons_count = int(getattr(prof, "lessons_count", 0) or 0) + 1
+        prof.updated_at = datetime.utcnow()
+        session.add(prof)
+
     session.commit()
     session.refresh(booking)
     _notify_booking_event("completed", booking, session)
@@ -1661,6 +2045,7 @@ class RoomInfoOut(BaseModel):
     booking: BookingOut
     tutor_email_masked: str
     student_email_masked: str
+    tutor_payment_method: str = ""
 
 
 @app.get("/api/rooms/{room_id}", response_model=RoomInfoOut)
@@ -1672,11 +2057,16 @@ def room_info(
     booking = _require_room_access(room_id, user, session)
     tutor = session.get(User, booking.tutor_user_id)
     student = session.get(User, booking.student_user_id)
+
+    prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == booking.tutor_user_id)).first()
+    pay = str(getattr(prof, "payment_method", "") or "") if prof else ""
+
     return RoomInfoOut(
         room_id=room_id,
         booking=_booking_to_out(booking, session),
         tutor_email_masked=_mask_email(tutor.email if tutor else ""),
         student_email_masked=_mask_email(student.email if student else ""),
+        tutor_payment_method=pay,
     )
 
 

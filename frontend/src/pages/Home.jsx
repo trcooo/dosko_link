@@ -6,251 +6,294 @@ import { useAuth } from '../auth.jsx'
 function initials(name) {
   const s = (name || '').trim()
   if (!s) return 'DL'
-  const parts = s.split(/\s+/).slice(0, 2)
-  return parts.map(p => p[0]?.toUpperCase()).join('')
+  return s.split(/\s+/).slice(0, 2).map(x => x[0]?.toUpperCase()).join('') || 'DL'
 }
 
-function Feature({ title, text }) {
+function Chip({ active, onClick, children }) {
   return (
-    <div className="featureCard">
-      <div className="featureTitle">{title}</div>
-      <div className="small">{text}</div>
-    </div>
+    <button className={active ? 'btn btnPrimary' : 'btn'} onClick={onClick} type="button">
+      {children}
+    </button>
   )
 }
 
-function RoomPreview() {
+function TutorCard({ t }) {
   return (
-    <div className="mockWrap">
-      <div className="mockHeader">
-        <div style={{ fontWeight: 900 }}>Комната занятия</div>
-        <div className="small">Видео • чат • доска • материалы</div>
-      </div>
-      <div className="mockRoom">
-        <div className="mockLeft">
-          <div className="mockVideos">
-            <div className="mockVideo">
-              <div className="mockTag">Преподаватель</div>
-            </div>
-            <div className="mockVideo">
-              <div className="mockTag">Ученик</div>
-            </div>
-          </div>
-          <div className="mockBoard">
-            <div className="mockBoardTop">
-              <span className="pill">Перо</span>
-              <span className="pill">Текст</span>
-              <span className="pill">Фото</span>
-              <span className="pill">Экспорт</span>
-              <span style={{ marginLeft: 'auto' }} className="small">реально работает в MVP</span>
-            </div>
-            <div className="mockBoardArea">
-              <div className="mockStroke" />
-              <div className="mockStroke s2" />
-              <div className="mockDot" />
-              <div className="mockImg" />
-            </div>
-          </div>
+    <Link to={`/tutor/${t.id}`} className="tutorCard tutorCardRich">
+      {t.photo_url ? (
+        <img className="avatar avatarImg" src={t.photo_url} alt={t.display_name} />
+      ) : (
+        <div className="avatar">{initials(t.display_name)}</div>
+      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <div style={{ fontWeight: 900 }}>{t.display_name}</div>
+          {t.founding_tutor ? <span className="pill badgeGold">Founding tutor</span> : null}
+          {t.is_verified ? <span className="pill badgeGreen">Проверен</span> : null}
         </div>
-        <div className="mockRight">
-          <div className="mockChat">
-            <div className="mockChatLine" />
-            <div className="mockChatLine short" />
-            <div className="mockChatLine" />
-            <div className="mockChatLine short" />
-            <div className="mockChatLine" />
-          </div>
-          <div className="mockCard">
-            <div style={{ fontWeight: 900 }}>Баланс (пробный)</div>
-            <div className="small">Тестовая оплата занятия с баланса — без реальных платежей.</div>
-          </div>
+        <div className="small" style={{ marginTop: 4 }}>
+          {(t.subjects || []).join(', ') || '—'} • {t.price_per_hour || 0} ₽/час • {t.language || 'ru'}
         </div>
+        <div className="small">★ {Number(t.rating_avg || 0).toFixed(1)} ({t.rating_count || 0}) • занятий: {t.lessons_count || 0}</div>
+        {!!(t.goals || []).length && (
+          <div className="pills" style={{ marginTop: 6 }}>
+            {(t.goals || []).slice(0, 3).map(g => <span key={g} className="pill">{g}</span>)}
+          </div>
+        )}
       </div>
-    </div>
+      <div className="btn btnPrimary">Профиль</div>
+    </Link>
   )
 }
 
 export default function Home() {
   const { me } = useAuth()
 
+  const [catalog, setCatalog] = useState({ subjects: [], goals: [], levels: [], grades: [], exams: [], languages: ['ru', 'en'] })
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+  const [tutors, setTutors] = useState([])
+
   const [q, setQ] = useState('')
   const [subject, setSubject] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [tutors, setTutors] = useState([])
-  const [err, setErr] = useState('')
+  const [goal, setGoal] = useState('')
+  const [level, setLevel] = useState('')
+  const [grade, setGrade] = useState('')
+  const [language, setLanguage] = useState('')
+  const [minPrice, setMinPrice] = useState('')
+  const [maxPrice, setMaxPrice] = useState('')
+  const [minRating, setMinRating] = useState('') // client-side filter
+  const [hasFreeSlots, setHasFreeSlots] = useState(false)
+  const [availableFrom, setAvailableFrom] = useState('')
+  const [availableTo, setAvailableTo] = useState('')
+  const [sort, setSort] = useState('best')
 
-  const subjectOptions = useMemo(() => [
-    '', 'математика', 'английский', 'физика', 'химия', 'русский', 'программирование'
-  ], [])
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const c = await apiFetch('/api/catalog')
+        if (alive && c) setCatalog(c)
+      } catch {
+        // fallback silently
+      }
+    })()
+    return () => { alive = false }
+  }, [])
 
-  async function load() {
+  async function loadTutors() {
     setLoading(true)
     setErr('')
     try {
       const params = new URLSearchParams()
       if (q.trim()) params.set('q', q.trim())
       if (subject) params.set('subject', subject)
+      if (goal) params.set('goal', goal)
+      if (level) params.set('level', level)
+      if (grade) params.set('grade', grade)
+      if (language) params.set('language', language)
+      if (minPrice !== '') params.set('min_price', String(Number(minPrice || 0)))
+      if (maxPrice !== '') params.set('max_price', String(Number(maxPrice || 0)))
+      if (hasFreeSlots) params.set('has_free_slots', 'true')
+      if (availableFrom) params.set('available_from', new Date(availableFrom).toISOString())
+      if (availableTo) params.set('available_to', new Date(availableTo).toISOString())
+      if (sort) params.set('sort', sort)
       const data = await apiFetch(`/api/tutors?${params.toString()}`)
       setTutors(Array.isArray(data) ? data : [])
     } catch (e) {
       setErr(e.message || 'Ошибка загрузки')
+      setTutors([])
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { loadTutors() }, [])
 
-  const featured = tutors.slice(0, 6)
+  const visibleTutors = useMemo(() => {
+    let arr = Array.isArray(tutors) ? [...tutors] : []
+    if (minRating) {
+      const v = Number(minRating)
+      if (Number.isFinite(v)) arr = arr.filter(t => Number(t.rating_avg || 0) >= v)
+    }
+    return arr
+  }, [tutors, minRating])
+
+  const featuredSubjects = (catalog.subjects || []).slice(0, 6)
+  const featuredExams = (catalog.exams || catalog.goals || []).slice(0, 6)
+  const featuredGrades = (catalog.grades || []).slice(0, 6)
+
+  function resetFilters() {
+    setQ('')
+    setSubject('')
+    setGoal('')
+    setLevel('')
+    setGrade('')
+    setLanguage('')
+    setMinPrice('')
+    setMaxPrice('')
+    setMinRating('')
+    setHasFreeSlots(false)
+    setAvailableFrom('')
+    setAvailableTo('')
+    setSort('best')
+  }
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {!me && (
-        <div className="hero">
-          <div className="heroInner">
-            <div className="heroBadge">DL • ДоскоЛинк</div>
-            <h1 className="heroTitle">Репетиторы, доска и созвон — в одной платформе</h1>
-            <div className="heroSub">
-              Найти → записаться → провести урок (видео/чат/доска) → прогресс и отзывы.
-              Сейчас это MVP: баланс и платежи пробные, но занятия проходят прямо здесь.
-            </div>
-
-            <div className="heroCtas">
-              <Link className="btn btnPrimary" to="/register">Начать бесплатно</Link>
-              <Link className="btn" to="/login">Войти</Link>
-              <a className="btn btnGhost" href="#search">Посмотреть репетиторов</a>
-            </div>
-
-            <div className="heroGrid">
-              <Feature title="Встроенный урок" text="WebRTC созвон + чат + доска в реальном времени." />
-              <Feature title="Удержание и прогресс" text="План обучения, домашка, мини-тесты и трекер тем." />
-              <Feature title="Доверие" text="Отзывы только после занятия и рейтинг репетиторов." />
-              <Feature title="Баланс (пробный)" text="Для MVP: пополнение и оплата занятия тестовые." />
-            </div>
-
-            <div style={{ marginTop: 16 }}>
-              <RoomPreview />
-            </div>
-
-            <div className="howRow">
-              <div className="howStep"><b>1.</b> Выбираете репетитора</div>
-              <div className="howStep"><b>2.</b> Бронируете слот</div>
-              <div className="howStep"><b>3.</b> Урок в комнате</div>
-              <div className="howStep"><b>4.</b> Прогресс и отзывы</div>
-            </div>
-
-            {featured.length > 0 && (
-              <div style={{ marginTop: 18 }}>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>Популярные репетиторы</div>
-                <div className="sub">Быстрый старт: открой профиль и запишись на слот.</div>
-                <div className="tutorGrid" style={{ marginTop: 10 }}>
-                  {featured.map(t => (
-                    <Link key={t.id} to={`/tutor/${t.id}`} className="tutorCard">
-                      <div className="avatar">{initials(t.display_name)}</div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 900 }}>{t.display_name}</div>
-                        <div className="small">
-                          {(t.subjects || []).join(', ') || '—'} • {t.price_per_hour || 0} ₽/час
-                        </div>
-                        <div className="small">★ {Number(t.rating_avg || 0).toFixed(1)} ({t.rating_count || 0})</div>
-                      </div>
-                      <div className="btn btnPrimary">Открыть</div>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            )}
+      <div className="hero">
+        <div className="heroInner">
+          <div className="heroBadge">MVP v0 • без встроенных оплат</div>
+          <div className="heroTitle">Найдите репетитора и проведите урок прямо на платформе</div>
+          <div className="heroSub">
+            Маркетплейс репетиторов → бронирование слота → комната урока (видео/чат/доска) → отзыв и рейтинг.
           </div>
-        </div>
-      )}
 
-      <div className="card" id="search">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <div>
-            <div className="h2">Поиск репетиторов</div>
-            <div className="sub">Фильтруй по предмету, цели и цене. Слоты показываются в профиле.</div>
-          </div>
           {!me && (
-            <div className="small">
-              Чтобы бронировать слоты, нужно <Link to="/login">войти</Link>.
+            <div className="heroCtas">
+              <Link className="btn btnPrimary" to="/register">Регистрация</Link>
+              <Link className="btn" to="/login">Войти</Link>
+              <a className="btn btnGhost" href="#search">Выбрать репетитора</a>
             </div>
           )}
-        </div>
 
-        <div className="row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
-          <div style={{ flex: 2, minWidth: 220 }}>
-            <div className="label">Поиск</div>
-            <input className="input" value={q} onChange={e => setQ(e.target.value)} placeholder="например: ЕГЭ, математика, разговорный" />
-          </div>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <div className="label">Предмет</div>
-            <select className="select" value={subject} onChange={e => setSubject(e.target.value)}>
-              {subjectOptions.map(s => (
-                <option key={s} value={s}>{s || 'любой'}</option>
-              ))}
-            </select>
-          </div>
-          <div style={{ alignSelf: 'flex-end' }}>
-            <button className="btn btnPrimary" onClick={load} disabled={loading}>{loading ? 'Ищем…' : 'Найти'}</button>
-          </div>
-        </div>
+          <div style={{ marginTop: 16 }} className="grid" id="search">
+            <div className="card" style={{ background: 'rgba(255,255,255,.92)' }}>
+              <div style={{ fontWeight: 900, fontSize: 18 }}>1) Выбор предмета</div>
+              <div className="pills" style={{ marginTop: 10 }}>
+                {featuredSubjects.map(s => (
+                  <Chip key={s} active={subject === s} onClick={() => setSubject(subject === s ? '' : s)}>{s}</Chip>
+                ))}
+              </div>
 
-        {err && <div className="err" style={{ marginTop: 12 }}>{err}</div>}
-
-        <div style={{ marginTop: 12 }} className="tutorGrid">
-          {loading ? (
-            <div className="small">Загрузка…</div>
-          ) : tutors.length === 0 ? (
-            <div className="small">Репетиторы не найдены. Попробуй другой запрос.</div>
-          ) : (
-            tutors.map(t => (
-              <Link key={t.id} to={`/tutor/${t.id}`} className="tutorCard">
-                <div className="avatar">{initials(t.display_name)}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 900 }}>{t.display_name}</div>
-                  <div className="small">
-                    {(t.subjects || []).join(', ') || '—'} • {t.price_per_hour || 0} ₽/час
-                  </div>
-                  <div className="small">★ {Number(t.rating_avg || 0).toFixed(1)} ({t.rating_count || 0})</div>
-                </div>
-                <div className="btn btnPrimary">Профиль</div>
-              </Link>
-            ))
-          )}
+              <div style={{ fontWeight: 900, fontSize: 18, marginTop: 14 }}>2) Класс / экзамен</div>
+              <div className="pills" style={{ marginTop: 10 }}>
+                {featuredGrades.map(g => (
+                  <Chip key={`g-${g}`} active={grade === g} onClick={() => setGrade(grade === g ? '' : g)}>{g} класс</Chip>
+                ))}
+                {featuredExams.map(x => (
+                  <Chip key={`e-${x}`} active={goal === x} onClick={() => setGoal(goal === x ? '' : x)}>{x}</Chip>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {!me && (
-        <div className="card">
-          <div className="h3">Почему это удобно</div>
-          <div className="grid grid3" style={{ marginTop: 12 }}>
-            <Feature title="Одно окно" text="Созвон, доска, чат, материалы — всё в комнате занятия." />
-            <Feature title="Качество" text="Отзывы после занятия, отчёты в админке, заявки/проблемы." />
-            <Feature title="Готово для роста" text="Баланс и выплаты подключаются позже — архитектура готова." />
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div>
+            <div className="h2">Каталог репетиторов</div>
+            <div className="sub">Сначала лучшие. Фильтры: предмет, цель, уровень, цена, рейтинг, язык и свободное время.</div>
           </div>
-
-          <div className="split" style={{ marginTop: 14 }}>
-            <div className="card">
-              <div style={{ fontWeight: 900 }}>Для ученика</div>
-              <ul className="ul" style={{ marginTop: 8 }}>
-                <li>Поиск по предметам и рейтингу</li>
-                <li>Бронь слота и комната урока</li>
-                <li>План обучения, домашка, тесты</li>
-                <li>Пробная оплата с баланса (в MVP)</li>
-              </ul>
-            </div>
-            <div className="card">
-              <div style={{ fontWeight: 900 }}>Для репетитора</div>
-              <ul className="ul" style={{ marginTop: 8 }}>
-                <li>Профиль, расписание, слоты</li>
-                <li>Уроки внутри платформы</li>
-                <li>Материалы, прогресс, мини-тест</li>
-                <li>Рейтинг и отзывы после занятий</li>
-              </ul>
-            </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn" onClick={resetFilters}>Сбросить</button>
+            <button className="btn btnPrimary" onClick={loadTutors} disabled={loading}>{loading ? 'Ищем…' : 'Найти'}</button>
           </div>
         </div>
-      )}
+
+        <div className="grid filtersGrid" style={{ marginTop: 12 }}>
+          <div>
+            <div className="label">Поиск</div>
+            <input className="input" value={q} onChange={e => setQ(e.target.value)} placeholder="имя, предмет, ЕГЭ, разговорный…" />
+          </div>
+          <div>
+            <div className="label">Предмет</div>
+            <select className="select" value={subject} onChange={e => setSubject(e.target.value)}>
+              <option value="">Любой</option>
+              {(catalog.subjects || []).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="label">Цель / экзамен</div>
+            <select className="select" value={goal} onChange={e => setGoal(e.target.value)}>
+              <option value="">Любая</option>
+              {[...(catalog.goals || []), ...((catalog.exams || []).filter(x => !(catalog.goals || []).includes(x)))]
+                .map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="label">Уровень</div>
+            <select className="select" value={level} onChange={e => setLevel(e.target.value)}>
+              <option value="">Любой</option>
+              {(catalog.levels || []).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="label">Класс</div>
+            <select className="select" value={grade} onChange={e => setGrade(e.target.value)}>
+              <option value="">Любой</option>
+              {(catalog.grades || []).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="label">Язык</div>
+            <select className="select" value={language} onChange={e => setLanguage(e.target.value)}>
+              <option value="">Любой</option>
+              {(catalog.languages || ['ru', 'en']).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="label">Цена от</div>
+            <input className="input" type="number" min="0" value={minPrice} onChange={e => setMinPrice(e.target.value)} placeholder="0" />
+          </div>
+          <div>
+            <div className="label">Цена до</div>
+            <input className="input" type="number" min="0" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} placeholder="5000" />
+          </div>
+          <div>
+            <div className="label">Мин. рейтинг</div>
+            <select className="select" value={minRating} onChange={e => setMinRating(e.target.value)}>
+              <option value="">Любой</option>
+              <option value="4">4.0+</option>
+              <option value="4.5">4.5+</option>
+              <option value="5">5.0</option>
+            </select>
+          </div>
+          <div>
+            <div className="label">Сортировка</div>
+            <select className="select" value={sort} onChange={e => setSort(e.target.value)}>
+              <option value="best">Лучшие сначала</option>
+              <option value="price_asc">Цена ↑</option>
+              <option value="price_desc">Цена ↓</option>
+              <option value="newest">Новые</option>
+            </select>
+          </div>
+          <div>
+            <div className="label">Свободное время: от</div>
+            <input className="input" type="datetime-local" value={availableFrom} onChange={e => setAvailableFrom(e.target.value)} />
+          </div>
+          <div>
+            <div className="label">Свободное время: до</div>
+            <input className="input" type="datetime-local" value={availableTo} onChange={e => setAvailableTo(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={hasFreeSlots} onChange={e => setHasFreeSlots(e.target.checked)} />
+            Только со свободными слотами
+          </label>
+          {!me && <span className="small">Чтобы бронировать, нужно войти как ученик.</span>}
+        </div>
+
+        {err && <div className="footerNote">{err}</div>}
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontWeight: 900 }}>Результаты</div>
+          <div className="small">{loading ? 'Загрузка…' : `${visibleTutors.length} репетиторов`}</div>
+        </div>
+
+        <div className="tutorGrid" style={{ marginTop: 10 }}>
+          {loading ? (
+            <div className="small">Загрузка…</div>
+          ) : visibleTutors.length === 0 ? (
+            <div className="small">Репетиторы не найдены. Попробуй ослабить фильтры.</div>
+          ) : (
+            visibleTutors.map(t => <TutorCard key={t.id} t={t} />)
+          )}
+        </div>
+      </div>
     </div>
   )
 }

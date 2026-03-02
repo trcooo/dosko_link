@@ -378,6 +378,17 @@ export default function Room() {
         )}
       </div>
 
+      {me?.role === 'student' && info?.tutor_payment_method && (
+        <div className="card">
+          <div className="panelTitle">
+            <div style={{ fontWeight: 900 }}>Оплата напрямую репетитору</div>
+            <div className="small">MVP без встроенных оплат</div>
+          </div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>{info.tutor_payment_method}</div>
+          <div className="footerNote">Показывается только после бронирования (в комнате занятия).</div>
+        </div>
+      )}
+
       <div className="room">
         <div className="card">
           <div className="panelTitle">

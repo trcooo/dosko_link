@@ -8,7 +8,7 @@ from typing import List, Tuple
 from sqlmodel import Session, select
 
 from auth import hash_password
-from models import User, TutorProfile, Slot, Booking, Review
+from models import User, TutorProfile, PlatformCatalog, Slot, Booking, Review
 
 
 def _truthy(v: str | None) -> bool:
@@ -45,17 +45,17 @@ def seed_demo(session: Session) -> None:
     demo_admin_email = (os.getenv("DL_DEMO_ADMIN_EMAIL") or "admin@demo.dl").strip().lower()
 
     tutors: List[Tuple[str, str, dict]] = [
-        ("tutor1@demo.dl", "Анна И.", {"subjects": ["Математика"], "levels": ["5-11 класс"], "goals": ["ЕГЭ", "ОГЭ"], "price": 1500, "lang": "ru",
+        ("tutor1@demo.dl", "Анна И.", {"subjects": ["Математика"], "levels": ["5-11 класс"], "goals": ["ЕГЭ", "ОГЭ"], "grades": ["9", "10", "11"], "price": 1500, "lang": "ru",
                                       "bio": "Подготовка к ЕГЭ/ОГЭ. Объясняю простым языком, много практики."}),
-        ("tutor2@demo.dl", "Илья С.", {"subjects": ["Английский"], "levels": ["A1-C1"], "goals": ["Разговорный", "IELTS"], "price": 1800, "lang": "ru",
+        ("tutor2@demo.dl", "Илья С.", {"subjects": ["Английский"], "levels": ["A1-C1"], "goals": ["Разговорный", "IELTS"], "grades": ["7", "8", "9", "10", "11"], "price": 1800, "lang": "ru",
                                       "bio": "Разговорная практика + грамматика. Домашка и трекер прогресса."}),
-        ("tutor3@demo.dl", "Мария К.", {"subjects": ["Физика"], "levels": ["7-11 класс"], "goals": ["ЕГЭ"], "price": 1700, "lang": "ru",
+        ("tutor3@demo.dl", "Мария К.", {"subjects": ["Физика"], "levels": ["7-11 класс"], "goals": ["ЕГЭ"], "grades": ["9", "10", "11"], "price": 1700, "lang": "ru",
                                       "bio": "Физика с нуля до уверенного балла. Разбор задач на доске."}),
-        ("tutor4@demo.dl", "Денис П.", {"subjects": ["Информатика"], "levels": ["8-11 класс"], "goals": ["ЕГЭ"], "price": 2000, "lang": "ru",
+        ("tutor4@demo.dl", "Денис П.", {"subjects": ["Информатика"], "levels": ["8-11 класс"], "goals": ["ЕГЭ"], "grades": ["9", "10", "11"], "price": 2000, "lang": "ru",
                                       "bio": "Алгоритмы, Python, разбор прототипов. Уроки в платформе."}),
-        ("tutor5@demo.dl", "София Р.", {"subjects": ["Русский язык"], "levels": ["5-11 класс"], "goals": ["ЕГЭ", "Сочинение"], "price": 1400, "lang": "ru",
+        ("tutor5@demo.dl", "София Р.", {"subjects": ["Русский язык"], "levels": ["5-11 класс"], "goals": ["ЕГЭ", "Сочинение"], "grades": ["8", "9", "10", "11"], "price": 1400, "lang": "ru",
                                       "bio": "Сочинение, грамматика, тестовая часть. Понятные схемы."}),
-        ("tutor6@demo.dl", "Павел Д.", {"subjects": ["Химия"], "levels": ["8-11 класс"], "goals": ["ОГЭ", "ЕГЭ"], "price": 1600, "lang": "ru",
+        ("tutor6@demo.dl", "Павел Д.", {"subjects": ["Химия"], "levels": ["8-11 класс"], "goals": ["ОГЭ", "ЕГЭ"], "grades": ["8", "9", "10", "11"], "price": 1600, "lang": "ru",
                                       "bio": "Реакции, расчёты, теория + практика. Мини-тесты перед уроком."}),
     ]
 
@@ -98,18 +98,50 @@ def seed_demo(session: Session) -> None:
     # Admin
     upsert_user(demo_admin_email, "admin")
 
+    # Seed catalog (idempotent)
+    if session.exec(select(PlatformCatalog.id)).first() is None:
+        defaults = [
+            ("subject", "Математика", 10),
+            ("subject", "Английский", 20),
+            ("subject", "Физика", 30),
+            ("subject", "Химия", 40),
+            ("subject", "Русский язык", 50),
+            ("subject", "Информатика", 60),
+            ("subject", "Программирование", 70),
+            ("goal", "ЕГЭ", 10),
+            ("goal", "ОГЭ", 20),
+            ("goal", "ЦТ", 30),
+            ("goal", "ЦЭ", 40),
+            ("goal", "Разговорный", 50),
+            ("goal", "IELTS", 60),
+            ("goal", "Подтянуть оценки", 70),
+            ("exam", "ЕГЭ", 10),
+            ("exam", "ОГЭ", 20),
+            ("exam", "ЦТ", 30),
+            ("exam", "ЦЭ", 40),
+            ("language", "ru", 10),
+            ("language", "en", 20),
+        ]
+        for kind, value, order in defaults:
+            session.add(PlatformCatalog(kind=kind, value=value, is_active=True, order_index=order))
+        for i in range(1, 12):
+            session.add(PlatformCatalog(kind="grade", value=str(i), is_active=True, order_index=i))
+        session.commit()
+
     # Tutors & profiles
     tutor_users: List[User] = []
     for email, name, meta in tutors:
         u = upsert_user(email, "tutor")
+
         # Ensure earnings field exists
         try:
-            u.earnings = int(getattr(u, 'earnings', 0) or 0)
+            u.earnings = int(getattr(u, "earnings", 0) or 0)
             session.add(u)
             session.commit()
             session.refresh(u)
         except Exception:
             pass
+
         tutor_users.append(u)
 
         prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == u.id)).first()
@@ -117,6 +149,11 @@ def seed_demo(session: Session) -> None:
             prof = TutorProfile(
                 user_id=u.id,
                 display_name=name,
+                photo_url="",
+                age=None,
+                education="",
+                backgrounds_json=json.dumps([], ensure_ascii=False),
+                grades_json=json.dumps(meta.get("grades", []) or [], ensure_ascii=False),
                 subjects_json=json.dumps(meta.get("subjects", []), ensure_ascii=False),
                 levels_json=json.dumps(meta.get("levels", []), ensure_ascii=False),
                 goals_json=json.dumps(meta.get("goals", []), ensure_ascii=False),
@@ -126,6 +163,12 @@ def seed_demo(session: Session) -> None:
                 video_url="",
                 rating_avg=0,
                 rating_count=0,
+                lessons_count=0,
+                certificate_links_json=json.dumps([], ensure_ascii=False),
+                documents_status="approved",
+                documents_note="",
+                payment_method="",
+                founding_tutor=email in {"tutor1@demo.dl", "tutor2@demo.dl", "tutor3@demo.dl"},
                 is_published=True,
             )
             session.add(prof)
@@ -140,6 +183,10 @@ def seed_demo(session: Session) -> None:
             if prof.display_name != name:
                 prof.display_name = name
                 updated = True
+            # ensure approved for demo
+            if getattr(prof, "documents_status", "") != "approved":
+                prof.documents_status = "approved"
+                updated = True
             if updated:
                 prof.updated_at = datetime.utcnow()
                 session.add(prof)
@@ -151,7 +198,7 @@ def seed_demo(session: Session) -> None:
         u = upsert_user(email, "student")
         # Give students some trial balance for demos
         try:
-            u.balance = max(int(getattr(u, 'balance', 0) or 0), 5000)
+            u.balance = max(int(getattr(u, "balance", 0) or 0), 5000)
             session.add(u)
             session.commit()
             session.refresh(u)
@@ -201,14 +248,14 @@ def seed_demo(session: Session) -> None:
             continue
 
         prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == tutor_u.id)).first()
-        price = int(getattr(prof, 'price_per_hour', 0) or 0)
+        price = int(getattr(prof, "price_per_hour", 0) or 0)
         if price <= 0:
             price = 1500
 
         # Create 2 reviews from different students (link to any existing booking or create dummy booking)
         for s_idx, stars, text in [(1, 5, "Отличный преподаватель, всё стало понятно!"), (2, 4, "Хороший урок, хотелось бы больше практики.")]:
             student = student_users[s_idx]
-            # create dummy booking with cancelled slot if needed
+
             slot = session.exec(
                 select(Slot).where(Slot.tutor_user_id == tutor_u.id).order_by(Slot.starts_at.asc())
             ).first()
@@ -229,7 +276,7 @@ def seed_demo(session: Session) -> None:
             session.add(r)
             session.commit()
 
-        # Update rating
+        # Update rating + lessons_count for demo
         if prof:
             rows = session.exec(select(Review).where(Review.tutor_user_id == tutor_u.id)).all()
             if rows:
@@ -238,6 +285,13 @@ def seed_demo(session: Session) -> None:
             else:
                 prof.rating_count = 0
                 prof.rating_avg = 0
+
+            # count done bookings as lessons_count (best-effort)
+            done_count = session.exec(
+                select(Booking.id).where(Booking.tutor_user_id == tutor_u.id).where(Booking.status == "done")
+            ).all()
+            prof.lessons_count = len(done_count)
+
             prof.updated_at = datetime.utcnow()
             session.add(prof)
             session.commit()

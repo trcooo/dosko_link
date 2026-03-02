@@ -28,7 +28,14 @@ class TutorProfile(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(index=True)
 
+    # Public
     display_name: str
+    photo_url: str = Field(default="")  # avatar / photo URL
+    age: Optional[int] = Field(default=None)
+    education: str = Field(default="")  # free text (университет/курсы/сертификаты)
+    backgrounds_json: str = Field(default="[]")  # JSON list: опыт/бекграунд
+    grades_json: str = Field(default="[]")  # JSON list: с какими классами работает
+
     subjects_json: str = Field(default="[]")  # JSON list
     levels_json: str = Field(default="[]")
     goals_json: str = Field(default="[]")
@@ -39,11 +46,36 @@ class TutorProfile(SQLModel, table=True):
     bio: str = Field(default="")
     video_url: str = Field(default="")
 
+    # Documents for moderation (links to cloud storage)
+    certificate_links_json: str = Field(default="[]")  # JSON list of URLs
+    documents_status: str = Field(default="draft", index=True)  # draft | pending | approved | rejected
+    documents_note: str = Field(default="")
+
+    # Payments "direct to tutor" (shown only after booking / in room)
+    payment_method: str = Field(default="")
+
+    # Social proof
     rating_avg: float = Field(default=0)
     rating_count: int = Field(default=0)
+    lessons_count: int = Field(default=0)
 
-    is_published: bool = Field(default=False, index=True)
+    # Marketplace
+    is_published: bool = Field(default=False, index=True)  # tutor wants to be listed
+    founding_tutor: bool = Field(default=False, index=True)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+
+class PlatformCatalog(SQLModel, table=True):
+    """Catalog items for filters (subjects/goals/levels/grades/languages)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    kind: str = Field(index=True)  # subject | goal | level | grade | language | exam
+    value: str = Field(index=True)
+    is_active: bool = Field(default=True, index=True)
+    order_index: int = Field(default=0, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class Slot(SQLModel, table=True):

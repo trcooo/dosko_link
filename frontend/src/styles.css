@@ -337,3 +337,38 @@ a{color:inherit; text-decoration:none}
   .heroTitle{font-size: 28px}
   .tutorGrid{grid-template-columns: 1fr}
 }
+
+/* MVP marketplace/admin additions */
+.filtersGrid{grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px}
+@media (max-width: 980px){.filtersGrid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media (max-width: 640px){.filtersGrid{grid-template-columns:1fr;}}
+
+.tutorCardRich{align-items:flex-start}
+.avatarImg{object-fit:cover; background:#fff; color:transparent}
+.profilePhoto{
+  width:110px; height:110px; border-radius:22px; object-fit:cover;
+  border:1px solid rgba(229,231,235,.9); background:#fff;
+}
+.profilePhotoFallback{
+  display:grid; place-items:center; font-weight:900; font-size:28px; color:white;
+  background: linear-gradient(135deg, var(--orange), var(--orange2));
+}
+.badgeGold{background: rgba(234,179,8,.12); border-color: rgba(234,179,8,.35); color:#8a5a00}
+.badgeGreen{background: rgba(34,197,94,.1); border-color: rgba(34,197,94,.3); color:#166534}
+
+.h2{font-weight:900; font-size:22px}
+.h3{font-weight:900; font-size:18px}
+
+.adminShell{display:grid; grid-template-columns:280px 1fr; gap:12px; align-items:start}
+@media (max-width: 980px){.adminShell{grid-template-columns:1fr}}
+.adminSidebar{position:sticky; top:86px; min-height:calc(100vh - 110px); display:flex; flex-direction:column}
+@media (max-width:980px){.adminSidebar{position:static; min-height:auto}}
+.adminMenu{display:grid; gap:8px; margin-top:14px}
+.adminMenuBtn{justify-content:flex-start}
+.adminStatsGrid{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px}
+@media (max-width:980px){.adminStatsGrid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media (max-width:640px){.adminStatsGrid{grid-template-columns:1fr;}}
+.adminStat{
+  border-radius:16px; border:1px solid rgba(229,231,235,.9); background:rgba(255,255,255,.92);
+  padding:12px;
+}

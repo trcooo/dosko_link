@@ -30,6 +30,7 @@ def _ensure_schema() -> None:
     """
 
     dialect = engine.dialect.name
+
     # Quote table names because "user" is reserved in Postgres.
     def _exec(sql: str):
         try:
@@ -48,11 +49,26 @@ def _ensure_schema() -> None:
         _exec('ALTER TABLE "user" ADD COLUMN notify_telegram BOOLEAN DEFAULT 0')
         _exec('ALTER TABLE "user" ADD COLUMN balance INTEGER DEFAULT 0')
         _exec('ALTER TABLE "user" ADD COLUMN earnings INTEGER DEFAULT 0')
+
         _exec('ALTER TABLE booking ADD COLUMN reminder_sent BOOLEAN DEFAULT 0')
         _exec('ALTER TABLE booking ADD COLUMN reminder_sent_at DATETIME')
         _exec('ALTER TABLE booking ADD COLUMN price INTEGER DEFAULT 0')
         _exec('ALTER TABLE booking ADD COLUMN payment_status VARCHAR DEFAULT "unpaid"')
         _exec('ALTER TABLE booking ADD COLUMN paid_at DATETIME')
+
+        # TutorProfile extensions (v0.7+)
+        _exec('ALTER TABLE tutorprofile ADD COLUMN photo_url VARCHAR')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN age INTEGER')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN education VARCHAR')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN backgrounds_json VARCHAR DEFAULT "[]"')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN grades_json VARCHAR DEFAULT "[]"')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN certificate_links_json VARCHAR DEFAULT "[]"')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN documents_status VARCHAR DEFAULT "draft"')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN documents_note VARCHAR DEFAULT ""')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN payment_method VARCHAR DEFAULT ""')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN lessons_count INTEGER DEFAULT 0')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN founding_tutor BOOLEAN DEFAULT 0')
+
     elif dialect.startswith("postgres"):
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE')
@@ -62,11 +78,25 @@ def _ensure_schema() -> None:
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS notify_telegram BOOLEAN DEFAULT FALSE')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS balance INTEGER DEFAULT 0')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS earnings INTEGER DEFAULT 0')
+
         _exec('ALTER TABLE booking ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE')
         _exec('ALTER TABLE booking ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMP')
         _exec('ALTER TABLE booking ADD COLUMN IF NOT EXISTS price INTEGER DEFAULT 0')
         _exec("ALTER TABLE booking ADD COLUMN IF NOT EXISTS payment_status VARCHAR DEFAULT 'unpaid'")
         _exec('ALTER TABLE booking ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP')
+
+        # TutorProfile extensions (v0.7+)
+        _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS photo_url VARCHAR')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS age INTEGER')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS education VARCHAR')
+        _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS backgrounds_json VARCHAR DEFAULT '[]'")
+        _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS grades_json VARCHAR DEFAULT '[]'")
+        _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS certificate_links_json VARCHAR DEFAULT '[]'")
+        _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS documents_status VARCHAR DEFAULT 'draft'")
+        _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS documents_note VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS payment_method VARCHAR DEFAULT ''")
+        _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS lessons_count INTEGER DEFAULT 0')
+        _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS founding_tutor BOOLEAN DEFAULT FALSE')
 
 
 def get_session():
