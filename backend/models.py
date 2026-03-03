@@ -319,33 +319,6 @@ class QuizAttempt(SQLModel, table=True):
 
 
 
-class TelegramLinkToken(SQLModel, table=True):
-    """One-time token to link a platform account with Telegram chat."""
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(index=True)
-    token: str = Field(index=True, unique=True)
-    expires_at: datetime = Field(index=True)
-    used_at: Optional[datetime] = Field(default=None, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
-
-
-class TelegramDispatchLog(SQLModel, table=True):
-    """Idempotency log for telegram sends (reminders and system notices)."""
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    unique_key: str = Field(index=True, unique=True)
-    channel: str = Field(default='telegram', index=True)
-    kind: str = Field(default='reminder', index=True)
-    booking_id: Optional[int] = Field(default=None, index=True)
-    user_id: Optional[int] = Field(default=None, index=True)
-    scheduled_for: Optional[datetime] = Field(default=None, index=True)
-    sent_at: Optional[datetime] = Field(default=None, index=True)
-    status: str = Field(default='sent', index=True)  # sent | skipped | error
-    error: str = Field(default='')
-    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
-
-
 # -----------------
 # Trial balance ledger
 # -----------------
