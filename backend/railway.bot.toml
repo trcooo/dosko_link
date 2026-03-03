@@ -1,6 +1,0 @@
-[build]
-builder = "RAILPACK"
-buildCommand = "pip install -r requirements.txt"
-
-[deploy]
-startCommand = "python telegram_bot_worker.py"
