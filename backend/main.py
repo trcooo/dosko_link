@@ -1496,6 +1496,8 @@ def list_tutors(
     language: Optional[str] = None,
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
+    min_reviews: Optional[int] = None,
+    verified_only: bool = False,
     has_free_slots: bool = False,
     available_from: Optional[datetime] = None,
     available_to: Optional[datetime] = None,
@@ -1555,6 +1557,15 @@ def list_tutors(
         if lang and str(getattr(p, "language", "") or "").strip().lower() != lang:
             return False
 
+        if verified_only:
+            ds = str(getattr(p, "documents_status", "") or "")
+            if ds != "approved":
+                return False
+
+        rc = int(getattr(p, "rating_count", 0) or 0)
+        if min_reviews is not None and rc < int(min_reviews):
+            return False
+
         price = int(getattr(p, "price_per_hour", 0) or 0)
         if min_price is not None and price < int(min_price):
             return False
@@ -1585,14 +1596,21 @@ def list_tutors(
         rc = int(getattr(p, "rating_count", 0) or 0)
         lc = int(getattr(p, "lessons_count", 0) or 0)
         upd = getattr(p, "updated_at", datetime.utcnow())
+        is_verified = str(getattr(p, "documents_status", "") or "") == "approved"
+        is_founding = bool(getattr(p, "founding_tutor", False))
+
+        # Confidence-aware quality score so brand-new tutors without reviews don't always crowd the top.
+        review_weight = min(max(rc, 0), 20) / 20.0
+        quality_score = (rating * (0.75 + 0.25 * review_weight)) if rc > 0 else 0.0
+
         if sort == "price_asc":
-            return (price, -rating, -rc, -lc, -upd.timestamp())
+            return (price, -int(is_verified), -quality_score, -rc, -lc, -upd.timestamp())
         if sort == "price_desc":
-            return (-price, -rating, -rc, -lc, -upd.timestamp())
+            return (-price, -int(is_verified), -quality_score, -rc, -lc, -upd.timestamp())
         if sort == "newest":
-            return (-upd.timestamp(), -rating, -rc, -lc, price)
-        # best
-        return (-rating, -rc, -lc, price, -upd.timestamp())
+            return (-upd.timestamp(), -int(is_verified), -quality_score, -rc, -lc, price)
+        # best: verified + proven results first, then price as tiebreaker.
+        return (-int(is_verified), -quality_score, -rc, -lc, -int(is_founding), price, -upd.timestamp())
 
     filtered.sort(key=sort_key)
     return [_profile_public_out(p) for p in filtered]
