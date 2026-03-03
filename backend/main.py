@@ -6,6 +6,7 @@ import json
 import os
 import smtplib
 import ssl
+import secrets
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,8 @@ from models import (
     Quiz,
     QuizQuestion,
     QuizAttempt,
+    TelegramLinkToken,
+    TelegramDispatchLog,
 )
 
 app = FastAPI(title="DL MVP API", version="0.7.0")
@@ -184,6 +187,18 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+
+
+def _frontend_base_url() -> str:
+    return (os.getenv("DL_FRONTEND_URL") or "").strip().rstrip("/")
+
+
+def _room_url(room_id: str) -> Optional[str]:
+    base = _frontend_base_url()
+    if not base:
+        return None
+    return f"{base}/room/{room_id}"
+
 def _smtp_cfg() -> Dict[str, Any]:
     return {
         "host": os.getenv("DL_SMTP_HOST"),
@@ -222,13 +237,20 @@ def _send_email(to_email: str, subject: str, text_body: str) -> None:
         server.sendmail(cfg["from"], [to_email], msg.encode("utf-8"))
 
 
-def _send_telegram(chat_id: str, text_body: str) -> None:
+def _send_telegram(chat_id: str, text_body: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
     token = os.getenv("DL_TELEGRAM_BOT_TOKEN")
     if not (token and chat_id):
         print(f"[notify/telegram] chat_id={chat_id} body={text_body[:180]}")
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": text_body}).encode("utf-8")
+    body: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text_body,
+        "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        body["reply_markup"] = reply_markup
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -261,9 +283,17 @@ def _notify_booking_event(
         "reminder": "DL: напоминание о занятии",
     }.get(kind, "DL: уведомление")
 
-    base = f"Событие: {kind}\nКомната: booking-{booking.id}{when}"
+    room_id = f"booking-{booking.id}"
+    room_url = _room_url(room_id)
+    base = f"Событие: {kind}\nКомната: {room_id}{when}"
+    if room_url:
+        base += f"\nСсылка: {room_url}"
     if extra:
         base += f"\n{extra}"
+
+    reply_markup = None
+    if room_url and kind in {"booked", "rescheduled", "reminder"}:
+        reply_markup = {"inline_keyboard": [[{"text": "Открыть занятие", "url": room_url}]]}
 
     for u in [tutor, student]:
         if not u:
@@ -271,7 +301,7 @@ def _notify_booking_event(
         if getattr(u, "notify_email", True):
             _send_email(u.email, subj, base)
         if getattr(u, "notify_telegram", False) and getattr(u, "telegram_chat_id", None):
-            _send_telegram(u.telegram_chat_id, base)
+            _send_telegram(u.telegram_chat_id, base, reply_markup=reply_markup)
 
 
 # -----------------
@@ -474,6 +504,66 @@ def me_settings(user: User = Depends(get_current_user)):
         "notify_telegram": getattr(user, "notify_telegram", False),
     }
 
+
+
+class TelegramLinkTokenOut(BaseModel):
+    ok: bool = True
+    token: str
+    deep_link: Optional[str] = None
+    bot_username: Optional[str] = None
+    expires_at: datetime
+    notify_telegram: bool
+    already_connected: bool
+
+
+@app.post("/api/telegram/link-token", response_model=TelegramLinkTokenOut)
+def create_telegram_link_token(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ttl_min = max(5, min(120, int(os.getenv("DL_TG_LINK_TOKEN_TTL_MINUTES") or "30")))
+    token = secrets.token_urlsafe(24).replace('-', '').replace('_', '')[:32]
+    expires_at = _utcnow() + timedelta(minutes=ttl_min)
+
+    # best-effort cleanup of older unused tokens for this user
+    old_tokens = session.exec(
+        select(TelegramLinkToken).where(TelegramLinkToken.user_id == user.id)
+    ).all()
+    for t in old_tokens:
+        if t.used_at is None and t.expires_at < _utcnow():
+            try:
+                session.delete(t)
+            except Exception:
+                pass
+
+    row = TelegramLinkToken(user_id=user.id, token=token, expires_at=expires_at, used_at=None)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+
+    bot_username = (os.getenv("DL_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@") or None
+    deep_link = f"https://t.me/{bot_username}?start={row.token}" if bot_username else None
+
+    return TelegramLinkTokenOut(
+        token=row.token,
+        deep_link=deep_link,
+        bot_username=bot_username,
+        expires_at=row.expires_at,
+        notify_telegram=bool(getattr(user, "notify_telegram", False)),
+        already_connected=bool(getattr(user, "telegram_chat_id", None)),
+    )
+
+
+@app.delete("/api/telegram/link")
+def unlink_telegram(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    user.telegram_chat_id = None
+    user.notify_telegram = False
+    session.add(user)
+    session.commit()
+    return {"ok": True}
 
 
 # -----------------
@@ -1496,8 +1586,6 @@ def list_tutors(
     language: Optional[str] = None,
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
-    min_reviews: Optional[int] = None,
-    verified_only: bool = False,
     has_free_slots: bool = False,
     available_from: Optional[datetime] = None,
     available_to: Optional[datetime] = None,
@@ -1557,15 +1645,6 @@ def list_tutors(
         if lang and str(getattr(p, "language", "") or "").strip().lower() != lang:
             return False
 
-        if verified_only:
-            ds = str(getattr(p, "documents_status", "") or "")
-            if ds != "approved":
-                return False
-
-        rc = int(getattr(p, "rating_count", 0) or 0)
-        if min_reviews is not None and rc < int(min_reviews):
-            return False
-
         price = int(getattr(p, "price_per_hour", 0) or 0)
         if min_price is not None and price < int(min_price):
             return False
@@ -1596,21 +1675,14 @@ def list_tutors(
         rc = int(getattr(p, "rating_count", 0) or 0)
         lc = int(getattr(p, "lessons_count", 0) or 0)
         upd = getattr(p, "updated_at", datetime.utcnow())
-        is_verified = str(getattr(p, "documents_status", "") or "") == "approved"
-        is_founding = bool(getattr(p, "founding_tutor", False))
-
-        # Confidence-aware quality score so brand-new tutors without reviews don't always crowd the top.
-        review_weight = min(max(rc, 0), 20) / 20.0
-        quality_score = (rating * (0.75 + 0.25 * review_weight)) if rc > 0 else 0.0
-
         if sort == "price_asc":
-            return (price, -int(is_verified), -quality_score, -rc, -lc, -upd.timestamp())
+            return (price, -rating, -rc, -lc, -upd.timestamp())
         if sort == "price_desc":
-            return (-price, -int(is_verified), -quality_score, -rc, -lc, -upd.timestamp())
+            return (-price, -rating, -rc, -lc, -upd.timestamp())
         if sort == "newest":
-            return (-upd.timestamp(), -int(is_verified), -quality_score, -rc, -lc, price)
-        # best: verified + proven results first, then price as tiebreaker.
-        return (-int(is_verified), -quality_score, -rc, -lc, -int(is_founding), price, -upd.timestamp())
+            return (-upd.timestamp(), -rating, -rc, -lc, price)
+        # best
+        return (-rating, -rc, -lc, price, -upd.timestamp())
 
     filtered.sort(key=sort_key)
     return [_profile_public_out(p) for p in filtered]
