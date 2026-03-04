@@ -17,7 +17,7 @@ function Chip({ active, onClick, children }) {
   )
 }
 
-function TutorCard({ t }) {
+function TutorCard({ t, why = [] }) {
   return (
     <Link to={`/tutor/${t.id}`} className="tutorCard tutorCardRich">
       {t.photo_url ? (
@@ -40,6 +40,11 @@ function TutorCard({ t }) {
             {(t.goals || []).slice(0, 3).map(g => <span key={g} className="pill">{g}</span>)}
           </div>
         )}
+        {Array.isArray(why) && why.length > 0 && (
+          <div className="small" style={{ marginTop: 6 }}>
+            <b>Почему подходит:</b> {why.slice(0, 3).join(' · ')}
+          </div>
+        )}
       </div>
       <div className="btn btnPrimary">Профиль</div>
     </Link>
@@ -53,6 +58,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [tutors, setTutors] = useState([])
+  const [recommended, setRecommended] = useState([])
 
   const [q, setQ] = useState('')
   const [subject, setSubject] = useState('')
@@ -100,6 +106,21 @@ export default function Home() {
       if (sort) params.set('sort', sort)
       const data = await apiFetch(`/api/tutors?${params.toString()}`)
       setTutors(Array.isArray(data) ? data : [])
+      try {
+        const recParams = new URLSearchParams()
+        if (q.trim()) recParams.set('q', q.trim())
+        if (subject) recParams.set('subject', subject)
+        if (goal) recParams.set('goal', goal)
+        if (level) recParams.set('level', level)
+        if (grade) recParams.set('grade', grade)
+        if (maxPrice !== '') recParams.set('budget', String(Number(maxPrice || 0)))
+        recParams.set('has_free_slots', hasFreeSlots ? 'true' : 'true')
+        recParams.set('limit', '6')
+        const rec = await apiFetch(`/api/tutors/recommended?${recParams.toString()}`)
+        setRecommended(Array.isArray(rec?.items) ? rec.items : [])
+      } catch {
+        setRecommended([])
+      }
     } catch (e) {
       setErr(e.message || 'Ошибка загрузки')
       setTutors([])
@@ -278,6 +299,16 @@ export default function Home() {
         </div>
 
         {err && <div className="footerNote">{err}</div>}
+
+        {Array.isArray(recommended) && recommended.length > 0 && (
+          <div className="card" style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 900 }}>Рекомендуемые репетиторы (почему)</div>
+            <div className="small">Подбор по совпадению цели/уровня/бюджета/свободных слотов и удержанию.</div>
+            <div className="grid" style={{ gap: 10, marginTop: 10 }}>
+              {recommended.map((it, idx) => <TutorCard key={`rec-${it?.tutor?.id || idx}`} t={it.tutor || {}} why={it.why || []} />)}
+            </div>
+          </div>
+        )}
 
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ fontWeight: 900 }}>Результаты</div>

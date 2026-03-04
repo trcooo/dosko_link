@@ -49,9 +49,22 @@ from models import (
     Quiz,
     QuizQuestion,
     QuizAttempt,
+    ParentContact,
+    TutorMethodology,
+    TutorStudentCRMCard,
+    LessonNote,
+    TutorMessageTemplate,
+    WaitlistEntry,
+    LastMinuteAlertSubscription,
+    RecurringBookingSeries,
+    RecurringBookingSeriesItem,
+    ExamTrack,
+    BookingMeta,
+    NotificationLog,
+    ReviewDetail,
 )
 
-app = FastAPI(title="DL MVP API", version="0.7.0")
+app = FastAPI(title="DL MVP API", version="0.8.0")
 
 # -----------------
 # CORS
@@ -259,6 +272,8 @@ def _notify_booking_event(
         "completed": "DL: занятие завершено",
         "rescheduled": "DL: занятие перенесено",
         "reminder": "DL: напоминание о занятии",
+        "attendance_confirmed": "DL: подтверждение занятия",
+        "attendance_declined": "DL: риск по занятию",
     }.get(kind, "DL: уведомление")
 
     base = f"Событие: {kind}\nКомната: booking-{booking.id}{when}"
@@ -1761,6 +1776,11 @@ def create_slot(
     session.add(slot)
     session.commit()
     session.refresh(slot)
+    try:
+        _notify_waitlist_and_last_minute_for_slot(session, slot, reason='slot_created')
+        session.commit()
+    except Exception:
+        session.rollback()
     return SlotOut(**slot.model_dump())
 
 
@@ -1801,10 +1821,19 @@ class BookingOut(BaseModel):
     room_id: str
     slot_starts_at: Optional[datetime] = None
     slot_ends_at: Optional[datetime] = None
+    student_attendance_status: str = 'pending'
+    tutor_attendance_status: str = 'pending'
+    student_attendance_updated_at: Optional[datetime] = None
+    tutor_attendance_updated_at: Optional[datetime] = None
+    reschedule_count: int = 0
+    last_reschedule_reason: str = ''
+    risk_status: str = 'low'
+    risk_reasons: List[str] = []
 
 
 def _booking_to_out(b: Booking, session: Session) -> BookingOut:
     slot = _slot_for_booking(b, session)
+    risk = _booking_risk_info(b, session)
     return BookingOut(
         id=b.id,
         slot_id=b.slot_id,
@@ -1818,6 +1847,14 @@ def _booking_to_out(b: Booking, session: Session) -> BookingOut:
         room_id=f"booking-{b.id}",
         slot_starts_at=slot.starts_at if slot else None,
         slot_ends_at=slot.ends_at if slot else None,
+        student_attendance_status=str(getattr(b, 'student_attendance_status', 'pending') or 'pending'),
+        tutor_attendance_status=str(getattr(b, 'tutor_attendance_status', 'pending') or 'pending'),
+        student_attendance_updated_at=getattr(b, 'student_attendance_updated_at', None),
+        tutor_attendance_updated_at=getattr(b, 'tutor_attendance_updated_at', None),
+        reschedule_count=int(getattr(b, 'reschedule_count', 0) or 0),
+        last_reschedule_reason=str(getattr(b, 'last_reschedule_reason', '') or ''),
+        risk_status=str(risk.get('status', 'low')),
+        risk_reasons=list(risk.get('reasons', []) or []),
     )
 
 
@@ -1901,6 +1938,149 @@ def _require_tutor_student_relation(tutor_id: int, student_id: int, session: Ses
         raise HTTPException(400, "tutor has no lessons with this student yet")
 
 
+def _booking_risk_info(booking: Booking, session: Session) -> Dict[str, Any]:
+    """Simple rule-based risk flag (no ML)."""
+    reasons: List[str] = []
+    score = 0
+
+    if str(getattr(booking, "status", "")) != "confirmed":
+        return {"status": "low", "score": 0, "reasons": []}
+
+    student_att = str(getattr(booking, "student_attendance_status", "pending") or "pending")
+    tutor_att = str(getattr(booking, "tutor_attendance_status", "pending") or "pending")
+
+    if student_att == "declined":
+        score += 3
+        reasons.append("Ученик отметил: не подтверждаю")
+    elif student_att == "pending":
+        score += 1
+        reasons.append("Ученик ещё не подтвердил")
+
+    if tutor_att == "declined":
+        score += 3
+        reasons.append("Репетитор отметил: не подтверждаю")
+    elif tutor_att == "pending":
+        score += 1
+        reasons.append("Репетитор ещё не подтвердил")
+
+    rc = int(getattr(booking, "reschedule_count", 0) or 0)
+    if rc >= 2:
+        score += 2
+        reasons.append(f"Переносов подряд/по истории брони: {rc}")
+    elif rc == 1:
+        score += 1
+        reasons.append("Был перенос занятия")
+
+    slot = _slot_for_booking(booking, session)
+    s = _as_utc(getattr(slot, "starts_at", None)) if slot else None
+    if s:
+        now = _utcnow()
+        hours_to_start = (s - now).total_seconds() / 3600
+        if 0 <= hours_to_start <= 12 and (student_att == "pending" or tutor_att == "pending"):
+            score += 1
+            reasons.append("До занятия меньше 12 часов, есть неподтверждённая сторона")
+
+    # Lightweight history signal: recent student cancellations with this tutor
+    try:
+        recent = session.exec(
+            select(Booking)
+            .where(Booking.student_user_id == booking.student_user_id)
+            .where(Booking.tutor_user_id == booking.tutor_user_id)
+            .order_by(Booking.created_at.desc())
+            .limit(8)
+        ).all()
+        cancels = sum(1 for x in recent if str(getattr(x, "status", "")) == "cancelled")
+        if cancels >= 2:
+            score += 1
+            reasons.append("В истории есть повторные отмены")
+    except Exception:
+        pass
+
+    if score >= 5:
+        level = "high"
+    elif score >= 3:
+        level = "medium"
+    else:
+        level = "low"
+    return {"status": level, "score": score, "reasons": reasons[:5]}
+
+
+def _find_repeat_slot_candidates(booking: Booking, session: Session, limit: int = 20) -> List[Slot]:
+    """Find open slots for same tutor after original lesson, sorted by closeness to original weekday/time."""
+    old_slot = _slot_for_booking(booking, session)
+    if not old_slot:
+        return []
+
+    old_start = _as_utc(old_slot.starts_at)
+    old_end = _as_utc(old_slot.ends_at)
+    if not old_start or not old_end:
+        return []
+    duration_min = max(1, int((old_end - old_start).total_seconds() // 60))
+    now = _utcnow()
+
+    rows = session.exec(
+        select(Slot)
+        .where(Slot.tutor_user_id == booking.tutor_user_id)
+        .where(Slot.status == "open")
+        .order_by(Slot.starts_at.asc())
+        .limit(200)
+    ).all()
+
+    scored: List[Tuple[float, Slot]] = []
+    for s in rows:
+        s_start = _as_utc(s.starts_at)
+        s_end = _as_utc(s.ends_at)
+        if not s_start or not s_end:
+            continue
+        if s_start <= now:
+            continue
+        dur = int((s_end - s_start).total_seconds() // 60)
+        if abs(dur - duration_min) > 15:
+            continue
+
+        weekday_pen = 0 if s_start.weekday() == old_start.weekday() else 1
+        minutes_old = old_start.hour * 60 + old_start.minute
+        minutes_new = s_start.hour * 60 + s_start.minute
+        minute_pen = abs(minutes_new - minutes_old) / 60.0
+        days_delta = abs((s_start.date() - old_start.date()).days)
+        # Encourage next-week repeats (7 or 14 days) and same weekday/time first.
+        week_target_pen = min(abs(days_delta - 7), abs(days_delta - 14), days_delta)
+        score = (weekday_pen * 1000) + (week_target_pen * 10) + minute_pen
+        scored.append((score, s))
+
+    scored.sort(key=lambda x: (x[0], x[1].starts_at))
+    return [s for _, s in scored[:max(1, limit)]]
+
+
+def _book_existing_slot_for_student(slot: Slot, student_user_id: int, session: Session) -> Booking:
+    if not slot or str(slot.status) != "open":
+        raise HTTPException(404, "slot not available")
+
+    slot.status = "booked"
+    session.add(slot)
+
+    prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == slot.tutor_user_id)).first()
+    price_per_hour = int(prof.price_per_hour) if prof else 0
+    minutes = max(1, int((slot.ends_at - slot.starts_at).total_seconds() // 60))
+    price = int(round(price_per_hour * (minutes / 60)))
+
+    new_booking = Booking(
+        slot_id=slot.id,
+        tutor_user_id=slot.tutor_user_id,
+        student_user_id=student_user_id,
+        status="confirmed",
+        price=price,
+        payment_status='unpaid',
+        student_attendance_status='pending',
+        tutor_attendance_status='pending',
+        reschedule_count=0,
+    )
+    session.add(new_booking)
+    session.commit()
+    session.refresh(new_booking)
+    return new_booking
+
+
 @app.post("/api/bookings/{booking_id}/complete", response_model=BookingActionOut)
 def complete_booking(
     booking_id: int,
@@ -1964,11 +2144,19 @@ def cancel_booking(
     session.commit()
     session.refresh(booking)
     _notify_booking_event("cancelled", booking, session)
+    try:
+        if slot and str(getattr(slot, 'status', '')) == 'open':
+            _notify_waitlist_and_last_minute_for_slot(session, slot, reason='cancelled_booking')
+            session.commit()
+    except Exception:
+        session.rollback()
     return BookingActionOut(booking=_booking_to_out(booking, session))
 
 
 class RescheduleIn(BaseModel):
     new_slot_id: int
+    template: Optional[str] = None  # tomorrow | propose_other_time | cant_today
+    note: Optional[str] = None
 
 
 @app.post("/api/bookings/{booking_id}/reschedule", response_model=BookingActionOut)
@@ -2005,6 +2193,18 @@ def reschedule_booking(
     booking.slot_id = new_slot.id
     booking.reminder_sent = False
     booking.reminder_sent_at = None
+    booking.student_attendance_status = "pending"
+    booking.tutor_attendance_status = "pending"
+    booking.student_attendance_updated_at = None
+    booking.tutor_attendance_updated_at = None
+    booking.reschedule_count = int(getattr(booking, "reschedule_count", 0) or 0) + 1
+    if payload.template or payload.note:
+        reason_bits = []
+        if payload.template:
+            reason_bits.append(f"template={payload.template}")
+        if payload.note:
+            reason_bits.append(str(payload.note).strip())
+        booking.last_reschedule_reason = " | ".join([x for x in reason_bits if x])[:300]
     session.add(booking)
 
     session.commit()
@@ -2018,8 +2218,122 @@ def reschedule_booking(
     except Exception:
         pass
 
+    if payload.template:
+        extra = ((extra + "\n") if extra else "") + f"Шаблон переноса: {payload.template}"
+    if payload.note:
+        extra = ((extra + "\n") if extra else "") + f"Комментарий: {str(payload.note).strip()[:500]}"
+
     _notify_booking_event("rescheduled", booking, session, extra=extra)
+    try:
+        if old_slot and str(getattr(old_slot, 'status', '')) == 'open':
+            _notify_waitlist_and_last_minute_for_slot(session, old_slot, reason='reschedule_opened_old_slot')
+            session.commit()
+    except Exception:
+        session.rollback()
     return BookingActionOut(booking=_booking_to_out(booking, session))
+
+
+class BookingAttendanceIn(BaseModel):
+    status: str  # pending | confirmed | declined
+    note: Optional[str] = None
+    participant: Optional[str] = None  # admin only: student | tutor
+
+
+@app.post("/api/bookings/{booking_id}/attendance", response_model=BookingActionOut)
+def set_booking_attendance(
+    booking_id: int,
+    payload: BookingAttendanceIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    booking = session.get(Booking, booking_id)
+    if not booking:
+        raise HTTPException(404, "booking not found")
+    _ensure_participant(booking, user)
+
+    status = str(payload.status or "").strip().lower()
+    if status not in {"pending", "confirmed", "declined"}:
+        raise HTTPException(400, "status must be pending|confirmed|declined")
+
+    now = datetime.utcnow()
+    target = None
+    if user.role == "admin" and payload.participant in {"student", "tutor"}:
+        target = payload.participant
+    elif user.id == booking.student_user_id:
+        target = "student"
+    elif user.id == booking.tutor_user_id:
+        target = "tutor"
+
+    if target == "student":
+        booking.student_attendance_status = status
+        booking.student_attendance_updated_at = now
+    elif target == "tutor":
+        booking.tutor_attendance_status = status
+        booking.tutor_attendance_updated_at = now
+    else:
+        raise HTTPException(403, "booking access denied")
+
+    session.add(booking)
+    session.commit()
+    session.refresh(booking)
+
+    kind = "attendance_confirmed" if status == "confirmed" else ("attendance_declined" if status == "declined" else None)
+    if kind:
+        who_ru = "Ученик" if target == "student" else "Репетитор"
+        extra = f"{who_ru} поставил статус: {status}"
+        if payload.note:
+            extra += f"\nКомментарий: {str(payload.note).strip()[:500]}"
+        _notify_booking_event(kind, booking, session, extra=extra)
+
+    return BookingActionOut(booking=_booking_to_out(booking, session))
+
+
+class RepeatBookingOut(BaseModel):
+    ok: bool = True
+    booking: BookingOut
+    match_type: str = "same_weekday_time"  # exact_next_week | same_weekday_time | nearest_available
+
+
+@app.post("/api/bookings/{booking_id}/repeat", response_model=RepeatBookingOut)
+def repeat_booking_one_click(
+    booking_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    source = session.get(Booking, booking_id)
+    if not source:
+        raise HTTPException(404, "booking not found")
+    _ensure_participant(source, user)
+
+    # In product terms this is primarily for student retention; admin can also use it.
+    if user.role != "admin" and user.id != source.student_user_id:
+        raise HTTPException(403, "only student can repeat booking")
+    if str(getattr(source, "status", "")) == "cancelled":
+        raise HTTPException(400, "cannot repeat cancelled booking")
+
+    old_slot = _slot_for_booking(source, session)
+    if not old_slot:
+        raise HTTPException(400, "source slot not found")
+    candidates = _find_repeat_slot_candidates(source, session, limit=10)
+    if not candidates:
+        raise HTTPException(404, "no matching open slots for repeat yet")
+
+    chosen = candidates[0]
+    old_start = _as_utc(old_slot.starts_at)
+    new_start = _as_utc(chosen.starts_at)
+    match_type = "nearest_available"
+    if old_start and new_start:
+        dd = abs((new_start.date() - old_start.date()).days)
+        same_wd = new_start.weekday() == old_start.weekday()
+        same_hm = (new_start.hour, new_start.minute) == (old_start.hour, old_start.minute)
+        if same_wd and same_hm and dd == 7:
+            match_type = "exact_next_week"
+        elif same_wd and same_hm:
+            match_type = "same_weekday_time"
+
+    new_booking = _book_existing_slot_for_student(chosen, source.student_user_id, session)
+    _notify_booking_event("booked", new_booking, session, extra=f"Повторная запись в 1 клик. match_type={match_type}")
+    return RepeatBookingOut(booking=_booking_to_out(new_booking, session), match_type=match_type)
 
 
 # -----------------
@@ -2063,7 +2377,12 @@ def cron_send_reminders(
             continue
         if window_from <= s <= window_to:
             mins = int((s - now).total_seconds() // 60)
-            _notify_booking_event("reminder", b, session, extra=f"До начала ~{mins} мин")
+            risk = _booking_risk_info(b, session)
+            extra = f"До начала ~{mins} мин"
+            extra += f"\nAttendance: student={getattr(b, 'student_attendance_status', 'pending')} tutor={getattr(b, 'tutor_attendance_status', 'pending')}"
+            if str(risk.get('status')) in {"medium", "high"}:
+                extra += f"\nРиск срыва: {risk.get('status')}"
+            _notify_booking_event("reminder", b, session, extra=extra)
             b.reminder_sent = True
             b.reminder_sent_at = now
             session.add(b)
@@ -4047,6 +4366,1689 @@ async def ws_room(ws: WebSocket, channel: str, room_id: str):
                 await ws.close(code=1011)
             except Exception:
                 pass
+
+
+
+# -----------------
+# Growth & Retention extensions (MVP+): parent notifications, recommendations,
+# recurring bookings, waitlist, last-minute alerts, exam mode, pulse, templates, CRM.
+# -----------------
+
+
+def _notif_key_for_user(u: Optional[User], fallback: str = "") -> str:
+    if not u:
+        return fallback or "unknown"
+    return f"user:{u.id}:{u.email or ''}"
+
+
+def _notification_exists(session: Session, recipient_key: str, entity_kind: str, entity_id: int, kind: str) -> bool:
+    row = session.exec(
+        select(NotificationLog)
+        .where(NotificationLog.recipient_key == recipient_key)
+        .where(NotificationLog.entity_kind == entity_kind)
+        .where(NotificationLog.entity_id == int(entity_id))
+        .where(NotificationLog.kind == kind)
+    ).first()
+    return bool(row)
+
+
+def _notification_mark(session: Session, recipient_key: str, entity_kind: str, entity_id: int, kind: str, note: str = "") -> None:
+    session.add(NotificationLog(
+        recipient_key=recipient_key[:300],
+        entity_kind=entity_kind[:40],
+        entity_id=int(entity_id),
+        kind=kind[:80],
+        note=(note or "")[:500],
+    ))
+
+
+def _get_parent_contact(session: Session, student_user_id: int) -> Optional[ParentContact]:
+    return session.exec(select(ParentContact).where(ParentContact.student_user_id == int(student_user_id))).first()
+
+
+def _send_parent_contact(contact: ParentContact, subject: str, text_body: str) -> None:
+    if not contact or not bool(getattr(contact, "is_active", True)):
+        return
+    em = str(getattr(contact, "parent_email", "") or "").strip()
+    tg = str(getattr(contact, "parent_telegram_chat_id", "") or "").strip()
+    if em:
+        _send_email(em, subject, text_body)
+    if tg:
+        _send_telegram(tg, text_body)
+
+
+def _parent_recipient_keys(contact: Optional[ParentContact]) -> List[str]:
+    if not contact:
+        return []
+    out: List[str] = []
+    em = str(getattr(contact, 'parent_email', '') or '').strip()
+    tg = str(getattr(contact, 'parent_telegram_chat_id', '') or '').strip()
+    if em:
+        out.append(f"parent_email:{em.lower()}")
+    if tg:
+        out.append(f"parent_tg:{tg}")
+    if not out:
+        out.append(f"parent_student:{contact.student_user_id}")
+    return out
+
+
+def _get_or_create_booking_meta(session: Session, booking_id: int) -> BookingMeta:
+    m = session.exec(select(BookingMeta).where(BookingMeta.booking_id == int(booking_id))).first()
+    if m:
+        return m
+    m = BookingMeta(booking_id=int(booking_id), booking_type="regular")
+    session.add(m)
+    session.commit()
+    session.refresh(m)
+    return m
+
+
+def _booking_meta_to_out(m: Optional[BookingMeta]) -> Dict[str, Any]:
+    if not m:
+        return {
+            "booking_id": None,
+            "booking_type": "regular",
+            "tutor_comment": "",
+            "tutor_comment_sent_at": None,
+            "recurring_series_id": None,
+            "is_trial": False,
+        }
+    return {
+        "booking_id": m.booking_id,
+        "booking_type": str(getattr(m, 'booking_type', 'regular') or 'regular'),
+        "tutor_comment": str(getattr(m, 'tutor_comment', '') or ''),
+        "tutor_comment_sent_at": getattr(m, 'tutor_comment_sent_at', None),
+        "recurring_series_id": getattr(m, 'recurring_series_id', None),
+        "is_trial": str(getattr(m, 'booking_type', 'regular') or 'regular') == 'trial',
+    }
+
+
+def _render_template_text(body: str, booking: Optional[Booking], session: Session, student: Optional[User] = None, tutor: Optional[User] = None) -> str:
+    txt = str(body or "")
+    slot = _slot_for_booking(booking, session) if booking else None
+    if booking and not student:
+        student = session.get(User, booking.student_user_id)
+    if booking and not tutor:
+        tutor = session.get(User, booking.tutor_user_id)
+    tutor_profile = session.exec(select(TutorProfile).where(TutorProfile.user_id == booking.tutor_user_id)).first() if booking else None
+    replacements = {
+        "{{student_email}}": student.email if student else "",
+        "{{student_mask}}": _mask_email(student.email if student else ""),
+        "{{tutor_email}}": tutor.email if tutor else "",
+        "{{tutor_name}}": getattr(tutor_profile, 'display_name', '') if tutor_profile else "",
+        "{{booking_id}}": str(booking.id) if booking else "",
+        "{{room_id}}": f"booking-{booking.id}" if booking else "",
+        "{{slot_start}}": slot.starts_at.isoformat() if slot else "",
+        "{{slot_end}}": slot.ends_at.isoformat() if slot else "",
+    }
+    for k, v in replacements.items():
+        txt = txt.replace(k, str(v or ""))
+    return txt
+
+
+def _related_students_for_tutor(session: Session, tutor_user_id: int) -> List[int]:
+    rows = session.exec(select(Booking).where(Booking.tutor_user_id == int(tutor_user_id))).all()
+    return sorted({int(r.student_user_id) for r in rows if r})
+
+
+def _has_tutor_student_relation(session: Session, tutor_user_id: int, student_user_id: int) -> bool:
+    return bool(session.exec(select(Booking).where(Booking.tutor_user_id == int(tutor_user_id)).where(Booking.student_user_id == int(student_user_id))).first())
+
+
+def _weekly_digest_for_tutor(session: Session, tutor_user_id: int, now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = _as_utc(now or _utcnow()) or _utcnow()
+    since = now - timedelta(days=7)
+    bookings = session.exec(select(Booking).where(Booking.tutor_user_id == int(tutor_user_id))).all()
+    done = 0
+    cancelled = 0
+    new_students = set()
+    all_students = set()
+    last_seen: Dict[int, datetime] = {}
+    for b in bookings:
+        all_students.add(int(b.student_user_id))
+        if b.created_at and _as_utc(b.created_at) and _as_utc(b.created_at) >= since:
+            new_students.add(int(b.student_user_id))
+        if _as_utc(b.created_at) and _as_utc(b.created_at) >= since:
+            if str(b.status) in {"done", "completed"}:
+                done += 1
+            if str(b.status) == "cancelled":
+                cancelled += 1
+        slot = _slot_for_booking(b, session)
+        if slot and slot.starts_at:
+            ss = _as_utc(slot.starts_at)
+            if ss:
+                cur = last_seen.get(int(b.student_user_id))
+                if not cur or ss > cur:
+                    last_seen[int(b.student_user_id)] = ss
+    dormant = []
+    for sid in sorted(all_students):
+        ls = last_seen.get(sid)
+        if not ls or (now - ls).days >= 14:
+            u = session.get(User, sid)
+            dormant.append({"student_user_id": sid, "student_hint": _mask_email(u.email if u else ""), "last_lesson_at": ls.isoformat() if ls else None})
+    txs = session.exec(select(BalanceTx).where(BalanceTx.user_id == int(tutor_user_id))).all()
+    earnings_7d = sum(int(t.amount or 0) for t in txs if str(getattr(t, 'kind', '')) == 'earn' and (_as_utc(t.created_at) or now) >= since)
+    return {
+        "range_from": since.isoformat(),
+        "range_to": now.isoformat(),
+        "lessons_done": done,
+        "cancelled": cancelled,
+        "new_students": len(new_students),
+        "dormant_students": dormant[:20],
+        "earnings_7d": earnings_7d,
+    }
+
+
+def _student_pulse(session: Session, student_user_id: int) -> Dict[str, Any]:
+    bookings = session.exec(select(Booking).where(Booking.student_user_id == int(student_user_id))).all()
+    total = len(bookings)
+    done = sum(1 for b in bookings if str(b.status) in {"done", "completed"})
+    cancelled = sum(1 for b in bookings if str(b.status) == "cancelled")
+    attended_confirmed = sum(1 for b in bookings if str(getattr(b, 'student_attendance_status', '')) == 'confirmed')
+    attendance_pct = int(round((done / max(1, total)) * 100)) if total else 0
+    hw = session.exec(select(Homework).where(Homework.student_user_id == int(student_user_id))).all()
+    hw_total = len(hw)
+    hw_done = sum(1 for h in hw if str(h.status) == 'checked')
+    hw_submitted = sum(1 for h in hw if str(h.status) in {'submitted', 'checked'})
+    homework_completion_pct = int(round((hw_submitted / max(1, hw_total)) * 100)) if hw_total else 0
+    quizzes = session.exec(select(QuizAttempt).where(QuizAttempt.student_user_id == int(student_user_id))).all()
+    quiz_scores = []
+    for a in quizzes:
+        if int(getattr(a, 'max_score', 0) or 0) > 0 and getattr(a, 'submitted_at', None):
+            quiz_scores.append(100.0 * float(a.score or 0) / float(a.max_score or 1))
+    avg_quiz = round(sum(quiz_scores)/len(quiz_scores), 1) if quiz_scores else None
+    topics = session.exec(select(TopicProgress).where(TopicProgress.student_user_id == int(student_user_id))).all()
+    gaps = [t.topic for t in topics if str(getattr(t, 'status', '')) != 'done']
+    exam = session.exec(select(ExamTrack).where(ExamTrack.student_user_id == int(student_user_id)).order_by(ExamTrack.updated_at.desc())).first()
+    readiness = int(getattr(exam, 'readiness_percent', 0) or 0) if exam else 0
+    return {
+        "student_user_id": int(student_user_id),
+        "attendance": {
+            "bookings_total": total,
+            "done": done,
+            "cancelled": cancelled,
+            "attendance_percent": attendance_pct,
+            "preconfirmed_count": attended_confirmed,
+        },
+        "homework": {
+            "total": hw_total,
+            "checked": hw_done,
+            "submitted_or_checked": hw_submitted,
+            "completion_percent": homework_completion_pct,
+        },
+        "mini_tests": {
+            "attempts": len(quiz_scores),
+            "avg_score_percent": avg_quiz,
+        },
+        "gaps": {
+            "count": len(gaps),
+            "topics": gaps[:15],
+        },
+        "exam": {
+            "kind": getattr(exam, 'exam_kind', None) if exam else None,
+            "subject": getattr(exam, 'exam_subject', None) if exam else None,
+            "readiness_percent": readiness,
+            "target_score": int(getattr(exam, 'target_score', 0) or 0) if exam else 0,
+            "current_score": int(getattr(exam, 'current_score', 0) or 0) if exam else 0,
+            "exam_date": getattr(exam, 'exam_date', None) if exam else None,
+        },
+    }
+
+
+def _days_until(dt: Optional[datetime]) -> Optional[int]:
+    if not dt:
+        return None
+    now = _as_utc(_utcnow()) or _utcnow()
+    dd = _as_utc(dt)
+    if not dd:
+        return None
+    return int((dd.date() - now.date()).days)
+
+
+def _slot_subjects_for_tutor(session: Session, tutor_user_id: int) -> List[str]:
+    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == int(tutor_user_id))).first()
+    return _loads_list(getattr(p, 'subjects_json', '[]')) if p else []
+
+
+def _notify_waitlist_and_last_minute_for_slot(session: Session, slot: Slot, reason: str = "slot_open") -> Dict[str, int]:
+    if not slot or str(getattr(slot, 'status', '')) != 'open':
+        return {"waitlist": 0, "last_minute": 0}
+    sdt = _as_utc(slot.starts_at)
+    if not sdt:
+        return {"waitlist": 0, "last_minute": 0}
+    now = _as_utc(_utcnow()) or _utcnow()
+    sent_waitlist = 0
+    sent_last = 0
+    tutor_subjects = [str(x).lower() for x in _slot_subjects_for_tutor(session, slot.tutor_user_id)]
+
+    # Waitlist: precise slot or tutor/time/subject match
+    waits = session.exec(select(WaitlistEntry).where(WaitlistEntry.status == 'active')).all()
+    for w in waits:
+        if w.slot_id and int(w.slot_id) != int(slot.id):
+            continue
+        if w.tutor_user_id and int(w.tutor_user_id) != int(slot.tutor_user_id):
+            continue
+        if w.desired_from and sdt < (_as_utc(w.desired_from) or sdt):
+            continue
+        if w.desired_to and sdt > (_as_utc(w.desired_to) or sdt):
+            continue
+        subj = str(getattr(w, 'subject', '') or '').strip().lower()
+        if subj and tutor_subjects and subj not in tutor_subjects:
+            continue
+        stu = session.get(User, w.student_user_id)
+        if not stu:
+            continue
+        key = _notif_key_for_user(stu, f"student:{w.student_user_id}")
+        if _notification_exists(session, key, 'slot', slot.id, f'waitlist_{reason}'):
+            continue
+        msg = f"Освободился слот #{slot.id} у репетитора #{slot.tutor_user_id}\nВремя: {slot.starts_at.isoformat()}\nМожно забронировать сейчас."
+        if getattr(stu, 'notify_email', True):
+            _send_email(stu.email, 'DL: слот освободился (лист ожидания)', msg)
+        if getattr(stu, 'notify_telegram', False) and getattr(stu, 'telegram_chat_id', None):
+            _send_telegram(stu.telegram_chat_id, msg)
+        _notification_mark(session, key, 'slot', slot.id, f'waitlist_{reason}', note=f'waitlist_id={w.id}')
+        w.status = 'notified'
+        w.updated_at = datetime.utcnow()
+        session.add(w)
+        sent_waitlist += 1
+
+    # Last-minute alerts (within 24h; "Слоты горят")
+    if 0 <= int((sdt - now).total_seconds()) <= 24 * 3600:
+        subs = session.exec(select(LastMinuteAlertSubscription).where(LastMinuteAlertSubscription.is_active == True)).all()  # noqa
+        for sub in subs:
+            if sub.tutor_user_id and int(sub.tutor_user_id) != int(slot.tutor_user_id):
+                continue
+            if bool(getattr(sub, 'only_today', True)) and sdt.date() != now.date():
+                continue
+            subj = str(getattr(sub, 'subject', '') or '').strip().lower()
+            if subj and tutor_subjects and subj not in tutor_subjects:
+                continue
+            stu = session.get(User, sub.student_user_id)
+            if not stu:
+                continue
+            key = _notif_key_for_user(stu, f"student:{sub.student_user_id}")
+            if _notification_exists(session, key, 'slot', slot.id, 'last_minute_slot'):
+                continue
+            msg = f"Слоты горят 🔥\nСегодня/скоро освободилось окно: {slot.starts_at.isoformat()} — {slot.ends_at.isoformat()}\nРепетитор #{slot.tutor_user_id}, слот #{slot.id}."
+            if getattr(stu, 'notify_email', True):
+                _send_email(stu.email, 'DL: освободился слот (last-minute)', msg)
+            if getattr(stu, 'notify_telegram', False) and getattr(stu, 'telegram_chat_id', None):
+                _send_telegram(stu.telegram_chat_id, msg)
+            _notification_mark(session, key, 'slot', slot.id, 'last_minute_slot', note=f'sub_id={sub.id}')
+            sent_last += 1
+    return {"waitlist": sent_waitlist, "last_minute": sent_last}
+
+
+def _recommend_tutors_payload(session: Session, q: Optional[str] = None, subject: Optional[str] = None, goal: Optional[str] = None,
+                              level: Optional[str] = None, grade: Optional[str] = None, budget: Optional[int] = None,
+                              has_free_slots: bool = True, limit: int = 8) -> List[Dict[str, Any]]:
+    profiles = session.exec(select(TutorProfile).where(TutorProfile.is_published == True)).all()  # noqa
+    subj = str(subject or '').strip().lower()
+    go = str(goal or '').strip().lower()
+    lev = str(level or '').strip().lower()
+    grd = str(grade or '').strip().lower()
+    needle = str(q or '').strip().lower()
+    limit = max(1, min(int(limit or 8), 20))
+
+    open_slots_by_tutor: Dict[int, int] = {}
+    if has_free_slots:
+        for s in session.exec(select(Slot).where(Slot.status == 'open')).all():
+            open_slots_by_tutor[int(s.tutor_user_id)] = open_slots_by_tutor.get(int(s.tutor_user_id), 0) + 1
+
+    out: List[Tuple[float, Dict[str, Any]]] = []
+    for p in profiles:
+        subjects = [str(x).strip().lower() for x in _loads_list(getattr(p, 'subjects_json', '[]'))]
+        goals = [str(x).strip().lower() for x in _loads_list(getattr(p, 'goals_json', '[]'))]
+        levels = [str(x).strip().lower() for x in _loads_list(getattr(p, 'levels_json', '[]'))]
+        grades = [str(x).strip().lower() for x in _loads_list(getattr(p, 'grades_json', '[]'))]
+        reasons: List[str] = []
+        score = 0.0
+        if subj:
+            if subj in subjects:
+                reasons.append(f"совпадает предмет: {subject}")
+                score += 4
+            else:
+                continue
+        if go and go in goals:
+            reasons.append(f"готовит к цели: {goal}")
+            score += 3
+        elif go:
+            continue
+        if lev and lev in levels:
+            reasons.append(f"подходит уровень: {level}")
+            score += 2
+        if grd and grd in grades:
+            reasons.append(f"работает с классом: {grade}")
+            score += 2
+        if budget is not None:
+            price = int(getattr(p, 'price_per_hour', 0) or 0)
+            if price <= int(budget):
+                reasons.append(f"в бюджете ({price} ₽/ч)")
+                score += 2
+            else:
+                score -= min(2, (price - int(budget)) / 1000.0)
+        free_cnt = open_slots_by_tutor.get(int(p.user_id), 0)
+        if has_free_slots:
+            if free_cnt <= 0:
+                continue
+            reasons.append(f"есть свободные слоты ({free_cnt})")
+            score += min(2.5, free_cnt * 0.5)
+        rating = float(getattr(p, 'rating_avg', 0) or 0)
+        rc = int(getattr(p, 'rating_count', 0) or 0)
+        lessons = int(getattr(p, 'lessons_count', 0) or 0)
+        if rating > 0:
+            reasons.append(f"рейтинг {rating:.1f} ({rc} отзывов)")
+            score += rating
+        if lessons > 0:
+            score += min(3, lessons / 15)
+        # retention proxy: students with 2+ bookings / all students
+        bs = session.exec(select(Booking).where(Booking.tutor_user_id == int(p.user_id))).all()
+        by_student: Dict[int, int] = {}
+        for b in bs:
+            if str(getattr(b, 'status', '')) == 'cancelled':
+                continue
+            sid = int(b.student_user_id)
+            by_student[sid] = by_student.get(sid, 0) + 1
+        if by_student:
+            retained = sum(1 for c in by_student.values() if c >= 2)
+            rr = int(round(100 * retained / max(1, len(by_student))))
+            reasons.append(f"retention {rr}% (повторные занятия)")
+            score += rr / 50.0
+        if needle:
+            text = ' '.join([getattr(p, 'display_name', '') or '', getattr(p, 'bio', '') or '', getattr(p, 'education', '') or '']).lower()
+            if needle in text:
+                score += 1
+        out.append((score, {
+            "tutor": _profile_public_out(p).model_dump(),
+            "score": round(score, 2),
+            "why": reasons[:6],
+        }))
+    out.sort(key=lambda x: (-x[0], -(x[1]['tutor'].get('rating_avg') or 0), x[1]['tutor'].get('price_per_hour') or 0))
+    return [x[1] for x in out[:limit]]
+
+
+class ParentContactIn(BaseModel):
+    parent_name: str = ""
+    relationship: str = "parent"
+    parent_email: str = ""
+    parent_telegram_chat_id: str = ""
+    notify_lessons: bool = True
+    notify_homework: bool = True
+    notify_comments: bool = True
+    is_active: bool = True
+
+
+@app.get('/api/me/parent-contact')
+def get_my_parent_contact(
+    user: User = Depends(require_role('student', 'admin')),
+    session: Session = Depends(get_session),
+):
+    c = _get_parent_contact(session, user.id)
+    if not c:
+        return {"contact": None}
+    return {"contact": {
+        "id": c.id,
+        "student_user_id": c.student_user_id,
+        "parent_name": c.parent_name,
+        "relationship": c.relationship,
+        "parent_email": c.parent_email,
+        "parent_telegram_chat_id": c.parent_telegram_chat_id,
+        "notify_lessons": c.notify_lessons,
+        "notify_homework": c.notify_homework,
+        "notify_comments": c.notify_comments,
+        "is_active": c.is_active,
+        "updated_at": c.updated_at,
+    }}
+
+
+@app.put('/api/me/parent-contact')
+def upsert_my_parent_contact(
+    payload: ParentContactIn,
+    user: User = Depends(require_role('student', 'admin')),
+    session: Session = Depends(get_session),
+):
+    c = _get_parent_contact(session, user.id)
+    if not c:
+        c = ParentContact(student_user_id=user.id)
+    c.parent_name = (payload.parent_name or '')[:120]
+    c.relationship = (payload.relationship or 'parent')[:40]
+    c.parent_email = (payload.parent_email or '').strip()[:240]
+    c.parent_telegram_chat_id = (payload.parent_telegram_chat_id or '').strip()[:120]
+    c.notify_lessons = bool(payload.notify_lessons)
+    c.notify_homework = bool(payload.notify_homework)
+    c.notify_comments = bool(payload.notify_comments)
+    c.is_active = bool(payload.is_active)
+    c.updated_at = datetime.utcnow()
+    session.add(c)
+    session.commit()
+    session.refresh(c)
+    return {"ok": True, "contact": {
+        "id": c.id,
+        "student_user_id": c.student_user_id,
+        "parent_name": c.parent_name,
+        "relationship": c.relationship,
+        "parent_email": c.parent_email,
+        "parent_telegram_chat_id": c.parent_telegram_chat_id,
+        "notify_lessons": c.notify_lessons,
+        "notify_homework": c.notify_homework,
+        "notify_comments": c.notify_comments,
+        "is_active": c.is_active,
+        "updated_at": c.updated_at,
+    }}
+
+
+class TutorMethodologyIn(BaseModel):
+    fit_for: str = ""
+    lesson_flow: str = ""
+    homework_load: str = ""
+    first_month_plan: str = ""
+    avg_results: str = ""
+
+
+def _methodology_out(m: Optional[TutorMethodology]) -> Dict[str, Any]:
+    if not m:
+        return {"fit_for": "", "lesson_flow": "", "homework_load": "", "first_month_plan": "", "avg_results": "", "updated_at": None}
+    return {
+        "fit_for": m.fit_for,
+        "lesson_flow": m.lesson_flow,
+        "homework_load": m.homework_load,
+        "first_month_plan": m.first_month_plan,
+        "avg_results": m.avg_results,
+        "updated_at": m.updated_at,
+    }
+
+
+@app.get('/api/tutors/me/methodology')
+def get_my_tutor_methodology(
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    m = session.exec(select(TutorMethodology).where(TutorMethodology.tutor_user_id == user.id)).first()
+    return {"methodology": _methodology_out(m)}
+
+
+@app.put('/api/tutors/me/methodology')
+def put_my_tutor_methodology(
+    payload: TutorMethodologyIn,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    m = session.exec(select(TutorMethodology).where(TutorMethodology.tutor_user_id == user.id)).first()
+    if not m:
+        m = TutorMethodology(tutor_user_id=user.id)
+    m.fit_for = (payload.fit_for or '')[:3000]
+    m.lesson_flow = (payload.lesson_flow or '')[:3000]
+    m.homework_load = (payload.homework_load or '')[:3000]
+    m.first_month_plan = (payload.first_month_plan or '')[:3000]
+    m.avg_results = (payload.avg_results or '')[:2000]
+    m.updated_at = datetime.utcnow()
+    session.add(m)
+    session.commit()
+    session.refresh(m)
+    return {"ok": True, "methodology": _methodology_out(m)}
+
+
+@app.get('/api/tutors/{profile_id:int}/methodology')
+def get_public_tutor_methodology(profile_id: int, session: Session = Depends(get_session)):
+    p = session.get(TutorProfile, profile_id)
+    if not p or not bool(getattr(p, 'is_published', False)):
+        raise HTTPException(404, 'tutor not found')
+    m = session.exec(select(TutorMethodology).where(TutorMethodology.tutor_user_id == p.user_id)).first()
+    return {"methodology": _methodology_out(m)}
+
+
+@app.get('/api/tutors/recommended')
+def recommended_tutors(
+    q: Optional[str] = None,
+    subject: Optional[str] = None,
+    goal: Optional[str] = None,
+    level: Optional[str] = None,
+    grade: Optional[str] = None,
+    budget: Optional[int] = None,
+    has_free_slots: bool = True,
+    limit: int = 8,
+    session: Session = Depends(get_session),
+):
+    return {"items": _recommend_tutors_payload(session, q=q, subject=subject, goal=goal, level=level, grade=grade, budget=budget, has_free_slots=has_free_slots, limit=limit)}
+
+
+class BookingMetaIn(BaseModel):
+    booking_type: Optional[str] = None  # regular|trial
+    tutor_comment: Optional[str] = None
+
+
+@app.get('/api/bookings/meta')
+def list_booking_meta(
+    ids: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    idset = None
+    if ids:
+        try:
+            idset = {int(x) for x in ids.split(',') if str(x).strip()}
+        except Exception:
+            idset = None
+    q = select(Booking)
+    if user.role == 'student':
+        q = q.where(Booking.student_user_id == user.id)
+    elif user.role == 'tutor':
+        q = q.where(Booking.tutor_user_id == user.id)
+    rows = session.exec(q).all()
+    if idset is not None:
+        rows = [b for b in rows if int(b.id) in idset]
+    mids = [int(b.id) for b in rows]
+    metas = session.exec(select(BookingMeta)).all() if mids else []
+    by_bid = {int(m.booking_id): m for m in metas if int(m.booking_id) in set(mids)}
+    return {"items": [{**_booking_meta_to_out(by_bid.get(int(b.id))), "booking_id": int(b.id)} for b in rows]}
+
+
+@app.get('/api/bookings/{booking_id}/meta')
+def get_booking_meta(
+    booking_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(b, user)
+    m = session.exec(select(BookingMeta).where(BookingMeta.booking_id == booking_id)).first()
+    out = _booking_meta_to_out(m)
+    out['booking_id'] = booking_id
+    return {"meta": out}
+
+
+@app.put('/api/bookings/{booking_id}/meta')
+def upsert_booking_meta(
+    booking_id: int,
+    payload: BookingMetaIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(b, user)
+    m = _get_or_create_booking_meta(session, booking_id)
+    if payload.booking_type is not None:
+        bt = str(payload.booking_type or '').strip().lower() or 'regular'
+        if bt not in {'regular', 'trial'}:
+            raise HTTPException(400, 'invalid booking_type')
+        m.booking_type = bt
+    if payload.tutor_comment is not None:
+        if user.role == 'student':
+            raise HTTPException(403, 'student cannot edit tutor comment')
+        m.tutor_comment = str(payload.tutor_comment or '')[:2000]
+    m.updated_at = datetime.utcnow()
+    session.add(m)
+    session.commit()
+    session.refresh(m)
+    return {"ok": True, "meta": _booking_meta_to_out(m)}
+
+
+class TutorCommentIn(BaseModel):
+    comment: str = Field(default='', max_length=2000)
+    send_to_parent: bool = True
+
+
+@app.post('/api/bookings/{booking_id}/tutor-comment')
+def set_tutor_comment(
+    booking_id: int,
+    payload: TutorCommentIn,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    if user.role != 'admin' and int(b.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    m = _get_or_create_booking_meta(session, booking_id)
+    m.tutor_comment = (payload.comment or '').strip()[:2000]
+    m.updated_at = datetime.utcnow()
+    if payload.send_to_parent and m.tutor_comment:
+        pc = _get_parent_contact(session, b.student_user_id)
+        if pc and bool(getattr(pc, 'notify_comments', True)):
+            slot = _slot_for_booking(b, session)
+            subj = 'DL: комментарий репетитора после урока'
+            body = f"Занятие #{b.id}{' (' + (slot.starts_at.isoformat() if slot else '') + ')' if slot else ''}\nКомментарий: {m.tutor_comment}"
+            _send_parent_contact(pc, subj, body)
+            m.tutor_comment_sent_at = datetime.utcnow()
+            for rk in _parent_recipient_keys(pc):
+                if not _notification_exists(session, rk, 'booking', b.id, 'parent_tutor_comment'):
+                    _notification_mark(session, rk, 'booking', b.id, 'parent_tutor_comment')
+    session.add(m)
+    session.commit()
+    session.refresh(m)
+    return {"ok": True, "meta": _booking_meta_to_out(m)}
+
+
+class TrialBookOut(BaseModel):
+    booking: BookingOut
+    trial_followup_preview: Dict[str, Any]
+
+
+def _trial_followup_payload(session: Session, booking: Booking) -> Dict[str, Any]:
+    slot = _slot_for_booking(booking, session)
+    p = session.exec(select(TutorProfile).where(TutorProfile.user_id == booking.tutor_user_id)).first()
+    subj = (_loads_list(getattr(p, 'subjects_json', '[]'))[:1] or ['предмет'])[0] if p else 'предмет'
+    goal = (_loads_list(getattr(p, 'goals_json', '[]'))[:1] or ['цель'])[0] if p else 'цель'
+    if slot and slot.starts_at:
+        start = _as_utc(slot.starts_at) or slot.starts_at
+        try:
+            next_anchor = start + timedelta(days=7)
+        except Exception:
+            next_anchor = None
+    else:
+        next_anchor = None
+    weeks = [
+        f"Неделя 1: диагностика пробелов по теме '{subj}', базовый план и мини-тест",
+        f"Неделя 2: отработка слабых тем + домашнее задание + разбор ошибок",
+        f"Неделя 3: тренировка формата ({goal}) и тайм-менеджмент",
+        f"Неделя 4: контрольный прогон + корректировка плана на следующий месяц",
+    ]
+    return {
+        "goal": goal,
+        "subject": subj,
+        "trial_booking_id": booking.id,
+        "suggested_start_next_week": next_anchor.isoformat() if next_anchor else None,
+        "plan_4_weeks": weeks,
+        "cta": {
+            "primary": "Купить пакет / записаться на 4 занятия",
+            "secondary": "Повторить слот",
+            "suggested_count": 4,
+        },
+    }
+
+
+@app.post('/api/slots/{slot_id}/book-trial', response_model=TrialBookOut)
+def book_trial_slot(
+    slot_id: int,
+    user: User = Depends(require_role('student', 'admin')),
+    session: Session = Depends(get_session),
+):
+    slot = session.get(Slot, slot_id)
+    if not slot or str(slot.status) != 'open':
+        raise HTTPException(404, 'slot not available')
+    mins = int(max(1, (slot.ends_at - slot.starts_at).total_seconds() // 60))
+    if mins < 15 or mins > 45:
+        # still allow, but mark as trial; 20-30 min is recommended
+        pass
+    b = _book_existing_slot_for_student(slot, user.id, session)
+    m = _get_or_create_booking_meta(session, b.id)
+    m.booking_type = 'trial'
+    m.updated_at = datetime.utcnow()
+    session.add(m)
+    session.commit()
+    session.refresh(b)
+    return TrialBookOut(booking=_booking_to_out(b, session), trial_followup_preview=_trial_followup_payload(session, b))
+
+
+@app.get('/api/bookings/{booking_id}/trial-followup')
+def get_trial_followup(
+    booking_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(b, user)
+    m = session.exec(select(BookingMeta).where(BookingMeta.booking_id == booking_id)).first()
+    is_trial = bool(m and str(getattr(m, 'booking_type', '')) == 'trial')
+    if not is_trial:
+        slot = _slot_for_booking(b, session)
+        if slot:
+            mins = int(max(1, (slot.ends_at - slot.starts_at).total_seconds() // 60))
+            is_trial = mins <= 35
+    if not is_trial:
+        raise HTTPException(400, 'booking is not marked as trial')
+    return {"followup": _trial_followup_payload(session, b), "meta": _booking_meta_to_out(m)}
+
+
+class CRMCardIn(BaseModel):
+    goal: str = ""
+    weak_topics: List[str] = []
+    notes: str = ""
+    tags: List[str] = []
+
+
+def _crm_card_to_out(c: Optional[TutorStudentCRMCard]) -> Dict[str, Any]:
+    if not c:
+        return {"goal": "", "weak_topics": [], "notes": "", "tags": [], "updated_at": None}
+    return {
+        "id": c.id,
+        "tutor_user_id": c.tutor_user_id,
+        "student_user_id": c.student_user_id,
+        "goal": c.goal,
+        "weak_topics": _loads_list(getattr(c, 'weak_topics_json', '[]')),
+        "notes": c.notes,
+        "tags": _loads_list(getattr(c, 'tags_json', '[]')),
+        "updated_at": c.updated_at,
+    }
+
+
+@app.get('/api/crm/students')
+def list_crm_students(
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    if user.role == 'admin':
+        return {"items": []}
+    sids = _related_students_for_tutor(session, user.id)
+    cards = session.exec(select(TutorStudentCRMCard).where(TutorStudentCRMCard.tutor_user_id == user.id)).all()
+    by_sid = {int(c.student_user_id): c for c in cards}
+    items = []
+    for sid in sids:
+        u = session.get(User, sid)
+        pulse = _student_pulse(session, sid)
+        card = by_sid.get(sid)
+        items.append({
+            "student_user_id": sid,
+            "student_hint": _mask_email(u.email if u else ""),
+            "goal": getattr(card, 'goal', '') if card else '',
+            "weak_topics_count": len(_loads_list(getattr(card, 'weak_topics_json', '[]'))) if card else 0,
+            "homework_completion_percent": pulse['homework']['completion_percent'],
+            "attendance_percent": pulse['attendance']['attendance_percent'],
+        })
+    return {"items": items}
+
+
+@app.get('/api/crm/students/{student_id}/summary')
+def get_crm_student_summary(
+    student_id: int,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    if user.role != 'admin' and not _has_tutor_student_relation(session, user.id, student_id):
+        raise HTTPException(403, 'no relation')
+    tutor_id = user.id if user.role != 'admin' else None
+    if user.role == 'admin':
+        b_any = session.exec(select(Booking).where(Booking.student_user_id == student_id)).first()
+        tutor_id = b_any.tutor_user_id if b_any else None
+    card = session.exec(select(TutorStudentCRMCard).where(TutorStudentCRMCard.student_user_id == student_id).where(TutorStudentCRMCard.tutor_user_id == int(tutor_id or 0))).first() if tutor_id else None
+    bookings = session.exec(select(Booking).where(Booking.student_user_id == student_id).where(Booking.tutor_user_id == int(tutor_id or 0))).all() if tutor_id else []
+    lesson_notes = session.exec(select(LessonNote).where(LessonNote.student_user_id == student_id).where(LessonNote.tutor_user_id == int(tutor_id or 0)).order_by(LessonNote.updated_at.desc())).all() if tutor_id else []
+    hw = session.exec(select(Homework).where(Homework.student_user_id == student_id).where(Homework.tutor_user_id == int(tutor_id or 0)).order_by(Homework.created_at.desc())).all() if tutor_id else []
+    return {
+        "card": _crm_card_to_out(card),
+        "pulse": _student_pulse(session, student_id),
+        "history": [{"booking_id": b.id, "status": b.status, "slot_starts_at": (_slot_for_booking(b, session).starts_at if _slot_for_booking(b, session) else None)} for b in bookings[:50]],
+        "lesson_notes": [{"id": n.id, "booking_id": n.booking_id, "lesson_summary": n.lesson_summary, "homework_assigned": n.homework_assigned, "homework_checked": n.homework_checked, "updated_at": n.updated_at} for n in lesson_notes[:20]],
+        "homework": [{"id": h.id, "title": h.title, "status": h.status, "due_at": h.due_at, "checked_at": h.checked_at} for h in hw[:30]],
+    }
+
+
+@app.get('/api/crm/student/{student_id}')
+def get_crm_card(
+    student_id: int,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    if user.role != 'admin' and not _has_tutor_student_relation(session, user.id, student_id):
+        raise HTTPException(403, 'no relation')
+    tutor_id = user.id if user.role != 'admin' else (session.exec(select(Booking).where(Booking.student_user_id == student_id)).first().tutor_user_id if session.exec(select(Booking).where(Booking.student_user_id == student_id)).first() else 0)
+    c = session.exec(select(TutorStudentCRMCard).where(TutorStudentCRMCard.tutor_user_id == int(tutor_id)).where(TutorStudentCRMCard.student_user_id == int(student_id))).first()
+    return {"card": _crm_card_to_out(c)}
+
+
+@app.post('/api/crm/student/{student_id}')
+def upsert_crm_card(
+    student_id: int,
+    payload: CRMCardIn,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    if user.role != 'admin' and not _has_tutor_student_relation(session, user.id, student_id):
+        raise HTTPException(403, 'no relation')
+    tutor_id = user.id if user.role != 'admin' else (session.exec(select(Booking).where(Booking.student_user_id == student_id)).first().tutor_user_id if session.exec(select(Booking).where(Booking.student_user_id == student_id)).first() else 0)
+    c = session.exec(select(TutorStudentCRMCard).where(TutorStudentCRMCard.tutor_user_id == int(tutor_id)).where(TutorStudentCRMCard.student_user_id == int(student_id))).first()
+    if not c:
+        c = TutorStudentCRMCard(tutor_user_id=int(tutor_id), student_user_id=int(student_id))
+    c.goal = (payload.goal or '')[:500]
+    c.weak_topics_json = json.dumps([str(x).strip() for x in (payload.weak_topics or []) if str(x).strip()][:50], ensure_ascii=False)
+    c.notes = (payload.notes or '')[:5000]
+    c.tags_json = json.dumps([str(x).strip() for x in (payload.tags or []) if str(x).strip()][:30], ensure_ascii=False)
+    c.updated_at = datetime.utcnow()
+    session.add(c)
+    session.commit()
+    session.refresh(c)
+    return {"ok": True, "card": _crm_card_to_out(c)}
+
+
+class LessonNoteIn(BaseModel):
+    lesson_summary: str = ""
+    weak_topics: List[str] = []
+    homework_assigned: str = ""
+    homework_checked: str = ""
+    tutor_comment_for_parent: str = ""
+
+
+@app.get('/api/bookings/{booking_id}/lesson-notes')
+def get_lesson_notes(
+    booking_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(b, user)
+    rows = session.exec(select(LessonNote).where(LessonNote.booking_id == booking_id).order_by(LessonNote.updated_at.desc())).all()
+    return {"items": [{
+        "id": n.id,
+        "booking_id": n.booking_id,
+        "lesson_summary": n.lesson_summary,
+        "weak_topics": _loads_list(getattr(n, 'weak_topics_json', '[]')),
+        "homework_assigned": n.homework_assigned,
+        "homework_checked": n.homework_checked,
+        "tutor_comment_for_parent": n.tutor_comment_for_parent,
+        "updated_at": n.updated_at,
+    } for n in rows]}
+
+
+@app.post('/api/bookings/{booking_id}/lesson-notes')
+def create_or_update_lesson_note(
+    booking_id: int,
+    payload: LessonNoteIn,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    if user.role != 'admin' and int(b.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    n = session.exec(select(LessonNote).where(LessonNote.booking_id == booking_id).order_by(LessonNote.updated_at.desc())).first()
+    if not n:
+        n = LessonNote(booking_id=booking_id, tutor_user_id=b.tutor_user_id, student_user_id=b.student_user_id)
+    n.lesson_summary = (payload.lesson_summary or '')[:4000]
+    n.weak_topics_json = json.dumps([str(x).strip() for x in (payload.weak_topics or []) if str(x).strip()][:50], ensure_ascii=False)
+    n.homework_assigned = (payload.homework_assigned or '')[:4000]
+    n.homework_checked = (payload.homework_checked or '')[:4000]
+    n.tutor_comment_for_parent = (payload.tutor_comment_for_parent or '')[:2000]
+    n.updated_at = datetime.utcnow()
+    session.add(n)
+    if n.tutor_comment_for_parent:
+        m = _get_or_create_booking_meta(session, booking_id)
+        m.tutor_comment = n.tutor_comment_for_parent
+        m.updated_at = datetime.utcnow()
+        session.add(m)
+    session.commit()
+    session.refresh(n)
+    return {"ok": True, "item": {
+        "id": n.id,
+        "booking_id": n.booking_id,
+        "lesson_summary": n.lesson_summary,
+        "weak_topics": _loads_list(n.weak_topics_json),
+        "homework_assigned": n.homework_assigned,
+        "homework_checked": n.homework_checked,
+        "tutor_comment_for_parent": n.tutor_comment_for_parent,
+        "updated_at": n.updated_at,
+    }}
+
+
+class TemplateIn(BaseModel):
+    kind: str = "general"
+    title: str = ""
+    body: str = ""
+    channel: str = "email"
+
+
+@app.get('/api/templates')
+def list_templates(
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    if user.role == 'admin':
+        rows = session.exec(select(TutorMessageTemplate).order_by(TutorMessageTemplate.updated_at.desc())).all()
+    else:
+        rows = session.exec(select(TutorMessageTemplate).where(TutorMessageTemplate.tutor_user_id == user.id).order_by(TutorMessageTemplate.updated_at.desc())).all()
+    return {"items": [{"id": t.id, "kind": t.kind, "title": t.title, "body": t.body, "channel": t.channel, "updated_at": t.updated_at} for t in rows]}
+
+
+@app.post('/api/templates')
+def create_template(
+    payload: TemplateIn,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    t = TutorMessageTemplate(
+        tutor_user_id=user.id,
+        kind=(payload.kind or 'general')[:40],
+        title=(payload.title or '')[:140],
+        body=(payload.body or '')[:4000],
+        channel=((payload.channel or 'email').strip().lower() if payload.channel else 'email')[:20],
+        updated_at=datetime.utcnow(),
+    )
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return {"ok": True, "template": {"id": t.id, "kind": t.kind, "title": t.title, "body": t.body, "channel": t.channel, "updated_at": t.updated_at}}
+
+
+@app.patch('/api/templates/{template_id}')
+def patch_template(
+    template_id: int,
+    payload: TemplateIn,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    t = session.get(TutorMessageTemplate, template_id)
+    if not t:
+        raise HTTPException(404, 'template not found')
+    if user.role != 'admin' and int(t.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    t.kind = (payload.kind or t.kind or 'general')[:40]
+    t.title = (payload.title or t.title or '')[:140]
+    t.body = (payload.body or t.body or '')[:4000]
+    t.channel = ((payload.channel or t.channel or 'email').strip().lower())[:20]
+    t.updated_at = datetime.utcnow()
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return {"ok": True, "template": {"id": t.id, "kind": t.kind, "title": t.title, "body": t.body, "channel": t.channel, "updated_at": t.updated_at}}
+
+
+@app.delete('/api/templates/{template_id}')
+def delete_template(
+    template_id: int,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    t = session.get(TutorMessageTemplate, template_id)
+    if not t:
+        raise HTTPException(404, 'template not found')
+    if user.role != 'admin' and int(t.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    session.delete(t)
+    session.commit()
+    return {"ok": True}
+
+
+class TemplateSendIn(BaseModel):
+    booking_id: Optional[int] = None
+    student_user_id: Optional[int] = None
+    channel: Optional[str] = None
+    subject: Optional[str] = None
+
+
+@app.post('/api/templates/{template_id}/send')
+def send_template_message(
+    template_id: int,
+    payload: TemplateSendIn,
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    t = session.get(TutorMessageTemplate, template_id)
+    if not t:
+        raise HTTPException(404, 'template not found')
+    if user.role != 'admin' and int(t.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    booking = session.get(Booking, int(payload.booking_id)) if payload.booking_id else None
+    if booking and user.role != 'admin' and int(booking.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access to booking')
+    student = session.get(User, int(payload.student_user_id)) if payload.student_user_id else (session.get(User, booking.student_user_id) if booking else None)
+    if not student:
+        raise HTTPException(400, 'student not found')
+    body = _render_template_text(t.body, booking, session, student=student)
+    channel = (payload.channel or t.channel or 'email').strip().lower()
+    if channel == 'telegram':
+        if not getattr(student, 'telegram_chat_id', None):
+            raise HTTPException(400, 'student has no telegram_chat_id')
+        _send_telegram(student.telegram_chat_id, body)
+    else:
+        _send_email(student.email, (payload.subject or t.title or 'DL: сообщение от репетитора')[:200], body)
+    return {"ok": True, "channel": channel, "preview": body}
+
+
+class WaitlistIn(BaseModel):
+    tutor_user_id: Optional[int] = None
+    slot_id: Optional[int] = None
+    subject: str = ""
+    desired_from: Optional[datetime] = None
+    desired_to: Optional[datetime] = None
+    note: str = ""
+
+
+@app.get('/api/waitlist')
+def list_waitlist(user: User = Depends(require_role('student', 'admin')), session: Session = Depends(get_session)):
+    q = select(WaitlistEntry)
+    if user.role != 'admin':
+        q = q.where(WaitlistEntry.student_user_id == user.id)
+    rows = session.exec(q.order_by(WaitlistEntry.created_at.desc())).all()
+    return {"items": [{
+        "id": w.id,
+        "student_user_id": w.student_user_id,
+        "tutor_user_id": w.tutor_user_id,
+        "slot_id": w.slot_id,
+        "subject": w.subject,
+        "desired_from": w.desired_from,
+        "desired_to": w.desired_to,
+        "status": w.status,
+        "note": w.note,
+        "updated_at": w.updated_at,
+    } for w in rows]}
+
+
+@app.post('/api/waitlist')
+def create_waitlist(
+    payload: WaitlistIn,
+    user: User = Depends(require_role('student', 'admin')),
+    session: Session = Depends(get_session),
+):
+    w = WaitlistEntry(
+        student_user_id=user.id,
+        tutor_user_id=payload.tutor_user_id,
+        slot_id=payload.slot_id,
+        subject=(payload.subject or '')[:80],
+        desired_from=payload.desired_from,
+        desired_to=payload.desired_to,
+        note=(payload.note or '')[:500],
+        status='active',
+        updated_at=datetime.utcnow(),
+    )
+    session.add(w)
+    session.commit()
+    session.refresh(w)
+    return {"ok": True, "item": {"id": w.id, "status": w.status}}
+
+
+@app.delete('/api/waitlist/{waitlist_id}')
+def delete_waitlist(waitlist_id: int, user: User = Depends(require_role('student', 'admin')), session: Session = Depends(get_session)):
+    w = session.get(WaitlistEntry, waitlist_id)
+    if not w:
+        raise HTTPException(404, 'not found')
+    if user.role != 'admin' and int(w.student_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    w.status = 'cancelled'
+    w.updated_at = datetime.utcnow()
+    session.add(w)
+    session.commit()
+    return {"ok": True}
+
+
+class LastMinuteSubIn(BaseModel):
+    tutor_user_id: Optional[int] = None
+    subject: str = ""
+    only_today: bool = True
+
+
+@app.get('/api/alerts/last-minute')
+def list_last_minute_alerts(user: User = Depends(require_role('student', 'admin')), session: Session = Depends(get_session)):
+    q = select(LastMinuteAlertSubscription)
+    if user.role != 'admin':
+        q = q.where(LastMinuteAlertSubscription.student_user_id == user.id)
+    rows = session.exec(q.order_by(LastMinuteAlertSubscription.created_at.desc())).all()
+    return {"items": [{"id": s.id, "student_user_id": s.student_user_id, "tutor_user_id": s.tutor_user_id, "subject": s.subject, "only_today": s.only_today, "is_active": s.is_active} for s in rows]}
+
+
+@app.post('/api/alerts/last-minute')
+def create_last_minute_alert(
+    payload: LastMinuteSubIn,
+    user: User = Depends(require_role('student', 'admin')),
+    session: Session = Depends(get_session),
+):
+    s = LastMinuteAlertSubscription(student_user_id=user.id, tutor_user_id=payload.tutor_user_id, subject=(payload.subject or '')[:80], only_today=bool(payload.only_today), is_active=True)
+    session.add(s)
+    session.commit()
+    session.refresh(s)
+    return {"ok": True, "item": {"id": s.id}}
+
+
+@app.delete('/api/alerts/last-minute/{sub_id}')
+def delete_last_minute_alert(sub_id: int, user: User = Depends(require_role('student', 'admin')), session: Session = Depends(get_session)):
+    s = session.get(LastMinuteAlertSubscription, sub_id)
+    if not s:
+        raise HTTPException(404, 'not found')
+    if user.role != 'admin' and int(s.student_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    s.is_active = False
+    session.add(s)
+    session.commit()
+    return {"ok": True}
+
+
+class RecurringBookingIn(BaseModel):
+    tutor_user_id: int
+    weekdays: List[int] = Field(default_factory=list)
+    time_hm: str = '18:00'
+    duration_minutes: int = 60
+    weeks_ahead: int = 4
+    auto_attendance_confirm: bool = False
+
+
+def _slot_matches_recurring(slot: Slot, tutor_user_id: int, weekdays: List[int], hh: int, mm: int, duration_min: int, now: datetime, until: datetime) -> bool:
+    if int(slot.tutor_user_id) != int(tutor_user_id):
+        return False
+    if str(getattr(slot, 'status', '')) != 'open':
+        return False
+    s = _as_utc(slot.starts_at)
+    e = _as_utc(slot.ends_at)
+    if not s or not e:
+        return False
+    if s <= now or s > until:
+        return False
+    if s.weekday() not in set(int(x) for x in weekdays):
+        return False
+    if (s.hour, s.minute) != (hh, mm):
+        return False
+    dur = int((e - s).total_seconds() // 60)
+    if abs(dur - int(duration_min)) > 15:
+        return False
+    return True
+
+
+@app.get('/api/recurring/bookings')
+def list_recurring_series(user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    q = select(RecurringBookingSeries)
+    if user.role == 'student':
+        q = q.where(RecurringBookingSeries.student_user_id == user.id)
+    elif user.role == 'tutor':
+        q = q.where(RecurringBookingSeries.tutor_user_id == user.id)
+    rows = session.exec(q.order_by(RecurringBookingSeries.updated_at.desc())).all()
+    items = []
+    for r in rows:
+        item_rows = session.exec(select(RecurringBookingSeriesItem).where(RecurringBookingSeriesItem.series_id == r.id)).all()
+        items.append({
+            "id": r.id,
+            "tutor_user_id": r.tutor_user_id,
+            "student_user_id": r.student_user_id,
+            "weekdays": _loads_list(getattr(r, 'weekdays_json', '[]')),
+            "time_hm": r.time_hm,
+            "duration_minutes": r.duration_minutes,
+            "weeks_ahead": r.weeks_ahead,
+            "auto_attendance_confirm": r.auto_attendance_confirm,
+            "status": r.status,
+            "booked_count": len(item_rows),
+            "updated_at": r.updated_at,
+        })
+    return {"items": items}
+
+
+def _book_recurring_matches(session: Session, series: RecurringBookingSeries) -> List[int]:
+    now = _as_utc(_utcnow()) or _utcnow()
+    until = now + timedelta(days=max(7, int(series.weeks_ahead or 4) * 7 + 2))
+    weekdays = [int(x) for x in _loads_list(getattr(series, 'weekdays_json', '[]')) if str(x).strip().isdigit()]
+    try:
+        hh, mm = [int(x) for x in str(series.time_hm or '18:00').split(':', 1)]
+    except Exception:
+        hh, mm = 18, 0
+    existing_items = session.exec(select(RecurringBookingSeriesItem).where(RecurringBookingSeriesItem.series_id == series.id)).all()
+    existing_booking_ids = {int(it.booking_id) for it in existing_items}
+    booked_ids = []
+    for slot in session.exec(select(Slot).where(Slot.tutor_user_id == int(series.tutor_user_id)).where(Slot.status == 'open').order_by(Slot.starts_at.asc())).all():
+        if not _slot_matches_recurring(slot, series.tutor_user_id, weekdays, hh, mm, int(series.duration_minutes or 60), now, until):
+            continue
+        b = _book_existing_slot_for_student(slot, int(series.student_user_id), session)
+        if bool(getattr(series, 'auto_attendance_confirm', False)):
+            b.student_attendance_status = 'confirmed'
+            b.student_attendance_updated_at = datetime.utcnow()
+            session.add(b)
+        m = _get_or_create_booking_meta(session, b.id)
+        m.recurring_series_id = int(series.id)
+        m.updated_at = datetime.utcnow()
+        session.add(m)
+        session.commit()
+        if int(b.id) not in existing_booking_ids:
+            session.add(RecurringBookingSeriesItem(series_id=series.id, booking_id=b.id))
+            session.commit()
+        booked_ids.append(int(b.id))
+    return booked_ids
+
+
+@app.post('/api/recurring/bookings')
+def create_recurring_booking_series(
+    payload: RecurringBookingIn,
+    user: User = Depends(require_role('student', 'admin')),
+    session: Session = Depends(get_session),
+):
+    weekdays = [int(x) for x in (payload.weekdays or []) if int(x) in {0,1,2,3,4,5,6}]
+    if not weekdays:
+        raise HTTPException(400, 'weekdays required')
+    series = RecurringBookingSeries(
+        tutor_user_id=int(payload.tutor_user_id),
+        student_user_id=int(user.id),
+        weekdays_json=json.dumps(sorted(set(weekdays))),
+        time_hm=(payload.time_hm or '18:00')[:5],
+        duration_minutes=max(20, min(int(payload.duration_minutes or 60), 180)),
+        weeks_ahead=max(1, min(int(payload.weeks_ahead or 4), 12)),
+        auto_attendance_confirm=bool(payload.auto_attendance_confirm),
+        status='active',
+        updated_at=datetime.utcnow(),
+    )
+    session.add(series)
+    session.commit()
+    session.refresh(series)
+    booked_ids = _book_recurring_matches(session, series)
+    return {"ok": True, "series_id": series.id, "booked_booking_ids": booked_ids}
+
+
+@app.post('/api/recurring/bookings/{series_id}/refresh')
+def refresh_recurring_booking_series(series_id: int, user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    series = session.get(RecurringBookingSeries, series_id)
+    if not series:
+        raise HTTPException(404, 'series not found')
+    if user.role == 'student' and int(series.student_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    if user.role == 'tutor' and int(series.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    booked_ids = _book_recurring_matches(session, series)
+    series.updated_at = datetime.utcnow()
+    session.add(series)
+    session.commit()
+    return {"ok": True, "booked_booking_ids": booked_ids}
+
+
+class ExamModeIn(BaseModel):
+    student_user_id: Optional[int] = None
+    exam_kind: str = 'ЕГЭ'
+    exam_subject: str = ''
+    exam_date: Optional[datetime] = None
+    target_score: int = 0
+    current_score: int = 0
+    readiness_percent: int = 0
+    weak_topics: List[str] = []
+    plan_by_weeks: List[str] = []
+    notes: str = ''
+
+
+@app.get('/api/exam-mode')
+def get_exam_mode(
+    student_user_id: Optional[int] = None,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    sid = int(student_user_id or user.id)
+    if user.role == 'student' and sid != int(user.id):
+        raise HTTPException(403, 'no access')
+    if user.role == 'tutor' and not _has_tutor_student_relation(session, user.id, sid):
+        raise HTTPException(403, 'no relation')
+    row = session.exec(select(ExamTrack).where(ExamTrack.student_user_id == sid).order_by(ExamTrack.updated_at.desc())).first()
+    if not row:
+        return {"exam": None}
+    return {"exam": {
+        "id": row.id,
+        "student_user_id": row.student_user_id,
+        "tutor_user_id": row.tutor_user_id,
+        "exam_kind": row.exam_kind,
+        "exam_subject": row.exam_subject,
+        "exam_date": row.exam_date,
+        "days_left": _days_until(row.exam_date),
+        "target_score": row.target_score,
+        "current_score": row.current_score,
+        "readiness_percent": row.readiness_percent,
+        "weak_topics": _loads_list(getattr(row, 'weak_topics_json', '[]')),
+        "plan_by_weeks": _loads_list(getattr(row, 'plan_by_weeks_json', '[]')),
+        "notes": row.notes,
+        "updated_at": row.updated_at,
+    }}
+
+
+@app.put('/api/exam-mode')
+def put_exam_mode(
+    payload: ExamModeIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    sid = int(payload.student_user_id or user.id)
+    if user.role == 'student' and sid != int(user.id):
+        raise HTTPException(403, 'no access')
+    if user.role == 'tutor' and not _has_tutor_student_relation(session, user.id, sid):
+        raise HTTPException(403, 'no relation')
+    row = session.exec(select(ExamTrack).where(ExamTrack.student_user_id == sid)).first()
+    if not row:
+        row = ExamTrack(student_user_id=sid)
+    row.tutor_user_id = user.id if user.role == 'tutor' else getattr(row, 'tutor_user_id', None)
+    row.exam_kind = (payload.exam_kind or 'ЕГЭ')[:40]
+    row.exam_subject = (payload.exam_subject or '')[:80]
+    row.exam_date = payload.exam_date
+    row.target_score = max(0, min(int(payload.target_score or 0), 1000))
+    row.current_score = max(0, min(int(payload.current_score or 0), 1000))
+    row.readiness_percent = max(0, min(int(payload.readiness_percent or 0), 100))
+    row.weak_topics_json = json.dumps([str(x).strip() for x in (payload.weak_topics or []) if str(x).strip()][:80], ensure_ascii=False)
+    row.plan_by_weeks_json = json.dumps([str(x).strip() for x in (payload.plan_by_weeks or []) if str(x).strip()][:52], ensure_ascii=False)
+    row.notes = (payload.notes or '')[:5000]
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return {"ok": True, "exam": {
+        "id": row.id,
+        "student_user_id": row.student_user_id,
+        "exam_kind": row.exam_kind,
+        "exam_subject": row.exam_subject,
+        "exam_date": row.exam_date,
+        "days_left": _days_until(row.exam_date),
+        "target_score": row.target_score,
+        "current_score": row.current_score,
+        "readiness_percent": row.readiness_percent,
+        "weak_topics": _loads_list(row.weak_topics_json),
+        "plan_by_weeks": _loads_list(row.plan_by_weeks_json),
+        "notes": row.notes,
+        "updated_at": row.updated_at,
+    }}
+
+
+@app.get('/api/pulse/mine')
+def get_my_pulse(user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    if user.role == 'tutor':
+        items = []
+        for sid in _related_students_for_tutor(session, user.id):
+            u = session.get(User, sid)
+            p = _student_pulse(session, sid)
+            items.append({"student_user_id": sid, "student_hint": _mask_email(u.email if u else ''), **p})
+        return {"items": items}
+    return {"pulse": _student_pulse(session, user.id)}
+
+
+@app.get('/api/pulse/student/{student_id}')
+def get_student_pulse(student_id: int, user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    if user.role == 'student' and int(student_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    if user.role == 'tutor' and not _has_tutor_student_relation(session, user.id, student_id):
+        raise HTTPException(403, 'no relation')
+    return {"pulse": _student_pulse(session, student_id)}
+
+
+class ReviewDetailIn(BaseModel):
+    explains_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    punctuality_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    materials_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    result_rating: Optional[int] = Field(default=None, ge=1, le=5)
+
+
+@app.post('/api/bookings/{booking_id}/review/details')
+def upsert_review_detail(
+    booking_id: int,
+    payload: ReviewDetailIn,
+    user: User = Depends(require_role('student', 'admin')),
+    session: Session = Depends(get_session),
+):
+    booking = session.get(Booking, booking_id)
+    if not booking or (user.role != 'admin' and int(booking.student_user_id) != int(user.id)):
+        raise HTTPException(404, 'booking not found')
+    review = session.exec(select(Review).where(Review.booking_id == booking_id)).first()
+    if not review:
+        raise HTTPException(400, 'create base review first')
+    d = session.exec(select(ReviewDetail).where(ReviewDetail.review_id == review.id)).first()
+    if not d:
+        d = ReviewDetail(review_id=review.id)
+    for attr in ['explains_rating','punctuality_rating','materials_rating','result_rating']:
+        val = getattr(payload, attr)
+        if val is not None:
+            setattr(d, attr, int(val))
+    lessons_before = len(session.exec(select(Booking).where(Booking.student_user_id == booking.student_user_id).where(Booking.tutor_user_id == booking.tutor_user_id).where(Booking.status.in_(['done','completed']))).all())
+    d.lessons_before_review = max(int(getattr(d, 'lessons_before_review', 0) or 0), int(lessons_before))
+    d.updated_at = datetime.utcnow()
+    session.add(d)
+    session.commit()
+    session.refresh(d)
+    return {"ok": True, "detail": {
+        "review_id": d.review_id,
+        "explains_rating": d.explains_rating,
+        "punctuality_rating": d.punctuality_rating,
+        "materials_rating": d.materials_rating,
+        "result_rating": d.result_rating,
+        "lessons_before_review": d.lessons_before_review,
+        "long_term_student": bool(int(d.lessons_before_review or 0) >= 10),
+    }}
+
+
+@app.get('/api/bookings/{booking_id}/review/details')
+def get_review_detail(booking_id: int, user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    booking = session.get(Booking, booking_id)
+    if not booking:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(booking, user)
+    review = session.exec(select(Review).where(Review.booking_id == booking_id)).first()
+    if not review:
+        return {"detail": None}
+    d = session.exec(select(ReviewDetail).where(ReviewDetail.review_id == review.id)).first()
+    if not d:
+        return {"detail": None}
+    return {"detail": {
+        "review_id": d.review_id,
+        "explains_rating": d.explains_rating,
+        "punctuality_rating": d.punctuality_rating,
+        "materials_rating": d.materials_rating,
+        "result_rating": d.result_rating,
+        "lessons_before_review": d.lessons_before_review,
+        "long_term_student": bool(int(d.lessons_before_review or 0) >= 10),
+    }}
+
+
+@app.get('/api/tutors/{profile_id:int}/reviews/extended')
+def list_tutor_reviews_extended(profile_id: int, session: Session = Depends(get_session)):
+    p = session.get(TutorProfile, profile_id)
+    if not p or not bool(getattr(p, 'is_published', False)):
+        raise HTTPException(404, 'tutor not found')
+    reviews = session.exec(select(Review).where(Review.tutor_user_id == p.user_id).order_by(Review.created_at.desc()).limit(50)).all()
+    details = session.exec(select(ReviewDetail)).all()
+    by_rid = {int(d.review_id): d for d in details}
+    items = []
+    for r in reviews:
+        d = by_rid.get(int(r.id))
+        base = _review_to_out(r, session).model_dump()
+        base['criteria'] = {
+            'explains_rating': getattr(d, 'explains_rating', None) if d else None,
+            'punctuality_rating': getattr(d, 'punctuality_rating', None) if d else None,
+            'materials_rating': getattr(d, 'materials_rating', None) if d else None,
+            'result_rating': getattr(d, 'result_rating', None) if d else None,
+        }
+        base['lessons_before_review'] = int(getattr(d, 'lessons_before_review', 0) or 0) if d else 0
+        base['long_term_student'] = bool(d and int(getattr(d, 'lessons_before_review', 0) or 0) >= 10)
+        items.append(base)
+    return {"items": items}
+
+
+class HomeworkReminderCronOut(BaseModel):
+    ok: bool
+    sent_24h: int = 0
+    sent_dayof: int = 0
+    sent_checked: int = 0
+
+
+@app.post('/api/cron/homework-reminders', response_model=HomeworkReminderCronOut)
+def cron_homework_reminders(key: Optional[str] = None, session: Session = Depends(get_session)):
+    need_key = os.getenv('DL_CRON_KEY')
+    if not need_key:
+        raise HTTPException(403, 'DL_CRON_KEY is not set')
+    if (key or '') != need_key:
+        raise HTTPException(403, 'bad key')
+    now = _as_utc(_utcnow()) or _utcnow()
+    sent24 = 0
+    sentday = 0
+    sentchk = 0
+    rows = session.exec(select(Homework).order_by(Homework.created_at.desc())).all()
+    for h in rows:
+        student = session.get(User, h.student_user_id)
+        tutor = session.get(User, h.tutor_user_id)
+        pc = _get_parent_contact(session, h.student_user_id)
+        due = _as_utc(h.due_at) if h.due_at else None
+        if due and str(h.status) in {'assigned', 'submitted'}:
+            delta_h = (due - now).total_seconds() / 3600.0
+            if 0 <= delta_h <= 28:
+                for target_kind in (['homework_24h'] if delta_h >= 8 else ['homework_dayof']):
+                    for recipient in [student]:
+                        if not recipient:
+                            continue
+                        keyr = _notif_key_for_user(recipient, f"user:{getattr(recipient, 'id', 0)}")
+                        if _notification_exists(session, keyr, 'homework', h.id, target_kind):
+                            continue
+                        msg = f"ДЗ: {h.title}\nДедлайн: {h.due_at.isoformat() if h.due_at else '-'}\nСтатус: {h.status}"
+                        if getattr(recipient, 'notify_email', True):
+                            _send_email(recipient.email, 'DL: напоминание о ДЗ', msg)
+                        if getattr(recipient, 'notify_telegram', False) and getattr(recipient, 'telegram_chat_id', None):
+                            _send_telegram(recipient.telegram_chat_id, msg)
+                        _notification_mark(session, keyr, 'homework', h.id, target_kind)
+                        if target_kind == 'homework_24h': sent24 += 1
+                        else: sentday += 1
+                    if pc and bool(getattr(pc, 'notify_homework', True)):
+                        for rk in _parent_recipient_keys(pc):
+                            pkind = f'parent_{target_kind}'
+                            if _notification_exists(session, rk, 'homework', h.id, pkind):
+                                continue
+                            body = f"Домашнее задание ученика\nЗадание: {h.title}\nДедлайн: {h.due_at.isoformat() if h.due_at else '-'}\nСтатус: {h.status}" \
+                                   + (f"\nРепетитор: {tutor.email}" if tutor else '')
+                            _send_parent_contact(pc, 'DL: дедлайн домашнего задания', body)
+                            _notification_mark(session, rk, 'homework', h.id, pkind)
+            
+        if str(h.status) == 'checked':
+            # notify student + parent once about checked/comment
+            if student:
+                keyr = _notif_key_for_user(student, f"user:{student.id}")
+                if not _notification_exists(session, keyr, 'homework', h.id, 'homework_checked'):
+                    msg = f"ДЗ проверено: {h.title}\n" + (f"Комментарий: {h.feedback_text}" if (h.feedback_text or '').strip() else 'Есть отметка о проверке.')
+                    if getattr(student, 'notify_email', True):
+                        _send_email(student.email, 'DL: ДЗ проверено', msg)
+                    if getattr(student, 'notify_telegram', False) and getattr(student, 'telegram_chat_id', None):
+                        _send_telegram(student.telegram_chat_id, msg)
+                    _notification_mark(session, keyr, 'homework', h.id, 'homework_checked')
+                    sentchk += 1
+            if pc and bool(getattr(pc, 'notify_homework', True)):
+                for rk in _parent_recipient_keys(pc):
+                    if _notification_exists(session, rk, 'homework', h.id, 'parent_homework_checked'):
+                        continue
+                    body = f"ДЗ проверено\nЗадание: {h.title}\n" + (f"Комментаррий репетитора: {h.feedback_text}" if (h.feedback_text or '').strip() else 'Репетитор отметил задание как проверенное.')
+                    _send_parent_contact(pc, 'DL: ДЗ проверено', body)
+                    _notification_mark(session, rk, 'homework', h.id, 'parent_homework_checked')
+    session.commit()
+    return HomeworkReminderCronOut(ok=True, sent_24h=sent24, sent_dayof=sentday, sent_checked=sentchk)
+
+
+@app.post('/api/cron/parent-notifications')
+def cron_parent_notifications(key: Optional[str] = None, session: Session = Depends(get_session)):
+    need_key = os.getenv('DL_CRON_KEY')
+    if not need_key:
+        raise HTTPException(403, 'DL_CRON_KEY is not set')
+    if (key or '') != need_key:
+        raise HTTPException(403, 'bad key')
+    now = _as_utc(_utcnow()) or _utcnow()
+    sent = {"lesson_reminders": 0, "lesson_completed": 0, "comments": 0}
+    for b in session.exec(select(Booking)).all():
+        pc = _get_parent_contact(session, b.student_user_id)
+        if not pc or not bool(getattr(pc, 'is_active', True)):
+            continue
+        slot = _slot_for_booking(b, session)
+        s = _as_utc(slot.starts_at) if slot else None
+        # Reminder (12-24h window, one per booking)
+        if s and str(b.status) == 'confirmed' and bool(getattr(pc, 'notify_lessons', True)):
+            hours = (s - now).total_seconds() / 3600.0
+            if 0 <= hours <= 24:
+                body = f"Напоминание о занятии\nУрок #{b.id}\nВремя: {slot.starts_at.isoformat() if slot else '-'}\nСтатусы подтверждения: ученик={getattr(b,'student_attendance_status','pending')} / репетитор={getattr(b,'tutor_attendance_status','pending')}"
+                for rk in _parent_recipient_keys(pc):
+                    if _notification_exists(session, rk, 'booking', b.id, 'parent_lesson_reminder'):
+                        continue
+                    _send_parent_contact(pc, 'DL: напоминание о занятии', body)
+                    _notification_mark(session, rk, 'booking', b.id, 'parent_lesson_reminder')
+                    sent['lesson_reminders'] += 1
+                    break
+        # Completed fact
+        if str(b.status) in {'done', 'completed'} and bool(getattr(pc, 'notify_lessons', True)):
+            for rk in _parent_recipient_keys(pc):
+                if _notification_exists(session, rk, 'booking', b.id, 'parent_lesson_completed'):
+                    continue
+                body = f"Урок состоялся\nУрок #{b.id}\nВремя: {slot.starts_at.isoformat() if slot else '-'}"
+                _send_parent_contact(pc, 'DL: урок состоялся', body)
+                _notification_mark(session, rk, 'booking', b.id, 'parent_lesson_completed')
+                sent['lesson_completed'] += 1
+                break
+        # Tutor comment (from BookingMeta)
+        bm = session.exec(select(BookingMeta).where(BookingMeta.booking_id == b.id)).first()
+        if bm and (str(getattr(bm, 'tutor_comment', '') or '').strip()) and bool(getattr(pc, 'notify_comments', True)):
+            for rk in _parent_recipient_keys(pc):
+                if _notification_exists(session, rk, 'booking', b.id, 'parent_tutor_comment'):
+                    continue
+                body = f"Комментарий репетитора по уроку #{b.id}\n{bm.tutor_comment}"
+                _send_parent_contact(pc, 'DL: комментарий репетитора', body)
+                _notification_mark(session, rk, 'booking', b.id, 'parent_tutor_comment')
+                sent['comments'] += 1
+                break
+    session.commit()
+    return {"ok": True, **sent}
+
+
+@app.get('/api/me/weekly-digest')
+def get_my_weekly_digest(
+    user: User = Depends(require_role('tutor', 'admin')),
+    session: Session = Depends(get_session),
+):
+    if user.role == 'admin':
+        return {"digest": None}
+    return {"digest": _weekly_digest_for_tutor(session, user.id)}
+
+
+@app.post('/api/cron/weekly-digest')
+def cron_weekly_digest(key: Optional[str] = None, session: Session = Depends(get_session)):
+    need_key = os.getenv('DL_CRON_KEY')
+    if not need_key:
+        raise HTTPException(403, 'DL_CRON_KEY is not set')
+    if (key or '') != need_key:
+        raise HTTPException(403, 'bad key')
+    now = _as_utc(_utcnow()) or _utcnow()
+    iso_year, iso_week, _ = now.isocalendar()
+    sent = 0
+    tutors = session.exec(select(User).where(User.role == 'tutor')).all()
+    for t in tutors:
+        d = _weekly_digest_for_tutor(session, t.id, now=now)
+        rk = _notif_key_for_user(t, f"user:{t.id}")
+        kind = f'weekly_digest_{iso_year}_{iso_week}'
+        if _notification_exists(session, rk, 'digest', t.id, kind):
+            continue
+        body = (
+            f"Weekly digest\nПроведено занятий: {d['lessons_done']}\nОтмены: {d['cancelled']}\nНовые ученики: {d['new_students']}\n"
+            f"Кто давно не записывался: {len(d['dormant_students'])}\nВыручка (trial): {d['earnings_7d']}"
+        )
+        if getattr(t, 'notify_email', True):
+            _send_email(t.email, 'DL: weekly digest репетитора', body)
+        if getattr(t, 'notify_telegram', False) and getattr(t, 'telegram_chat_id', None):
+            _send_telegram(t.telegram_chat_id, body)
+        _notification_mark(session, rk, 'digest', t.id, kind)
+        sent += 1
+    session.commit()
+    return {"ok": True, "sent": sent, "iso_week": f"{iso_year}-W{iso_week}"}
+
+
+@app.post('/api/cron/marketplace-alerts')
+def cron_marketplace_alerts(key: Optional[str] = None, session: Session = Depends(get_session)):
+    need_key = os.getenv('DL_CRON_KEY')
+    if not need_key:
+        raise HTTPException(403, 'DL_CRON_KEY is not set')
+    if (key or '') != need_key:
+        raise HTTPException(403, 'bad key')
+    sent_wait = 0
+    sent_last = 0
+    now = _as_utc(_utcnow()) or _utcnow()
+    until = now + timedelta(days=1)
+    for slot in session.exec(select(Slot).where(Slot.status == 'open').order_by(Slot.starts_at.asc())).all():
+        s = _as_utc(slot.starts_at)
+        if not s or s < now or s > until:
+            continue
+        res = _notify_waitlist_and_last_minute_for_slot(session, slot, reason='cron')
+        sent_wait += int(res.get('waitlist', 0) or 0)
+        sent_last += int(res.get('last_minute', 0) or 0)
+    session.commit()
+    return {"ok": True, "waitlist": sent_wait, "last_minute": sent_last}
+
+
+@app.get('/api/platform/value-features')
+def platform_value_features():
+    return {
+        "anti_circumvention_strategy": {
+            "principle": "ценность > запреты",
+            "features": [
+                "расписание и повторная запись",
+                "напоминания и подтверждение занятия",
+                "история уроков, ДЗ, прогресс",
+                "отзывы с критериями",
+                "родительские уведомления",
+                "waitlist и last-minute slots",
+                "серии занятий (recurring booking)",
+            ],
+        }
+    }
 
 # -----------------
 # Serve Frontend (built with Vite) when ./static exists (single-service deploy)

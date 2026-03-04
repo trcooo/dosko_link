@@ -102,6 +102,16 @@ class Booking(SQLModel, table=True):
     reminder_sent: bool = Field(default=False, index=True)
     reminder_sent_at: Optional[datetime] = Field(default=None)
 
+    # Attendance confirmation (MVP): each side confirms readiness before lesson.
+    student_attendance_status: str = Field(default="pending", index=True)  # pending | confirmed | declined
+    tutor_attendance_status: str = Field(default="pending", index=True)  # pending | confirmed | declined
+    student_attendance_updated_at: Optional[datetime] = Field(default=None)
+    tutor_attendance_updated_at: Optional[datetime] = Field(default=None)
+
+    # Reschedule analytics (MVP): useful for risk flag and weekly digest later.
+    reschedule_count: int = Field(default=0)
+    last_reschedule_reason: str = Field(default="")
+
     # Trial balance payment (no real payouts yet)
     price: int = Field(default=0)
     payment_status: str = Field(default='unpaid', index=True)  # unpaid | paid | refunded
@@ -332,3 +342,167 @@ class BalanceTx(SQLModel, table=True):
     booking_id: Optional[int] = Field(default=None, index=True)
     note: str = Field(default='')
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# -----------------
+# Growth & Retention extensions (MVP+)
+# -----------------
+
+
+class ParentContact(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    student_user_id: int = Field(index=True, unique=True)
+    parent_name: str = Field(default="")
+    relationship: str = Field(default="parent")
+    parent_email: str = Field(default="")
+    parent_telegram_chat_id: str = Field(default="")
+    notify_lessons: bool = Field(default=True, index=True)
+    notify_homework: bool = Field(default=True, index=True)
+    notify_comments: bool = Field(default=True, index=True)
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class TutorMethodology(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True, unique=True)
+    fit_for: str = Field(default="")
+    lesson_flow: str = Field(default="")
+    homework_load: str = Field(default="")
+    first_month_plan: str = Field(default="")
+    avg_results: str = Field(default="")
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TutorStudentCRMCard(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True)
+    student_user_id: int = Field(index=True)
+    goal: str = Field(default="")
+    weak_topics_json: str = Field(default="[]")
+    notes: str = Field(default="")
+    tags_json: str = Field(default="[]")
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class LessonNote(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    booking_id: int = Field(index=True)
+    tutor_user_id: int = Field(index=True)
+    student_user_id: int = Field(index=True)
+    lesson_summary: str = Field(default="")
+    weak_topics_json: str = Field(default="[]")
+    homework_assigned: str = Field(default="")
+    homework_checked: str = Field(default="")
+    tutor_comment_for_parent: str = Field(default="")
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class TutorMessageTemplate(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True)
+    kind: str = Field(default="general", index=True)  # reminder | repeat | homework | reschedule | general
+    title: str = Field(default="")
+    body: str = Field(default="")
+    channel: str = Field(default="email", index=True)  # email | telegram
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class WaitlistEntry(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    student_user_id: int = Field(index=True)
+    tutor_user_id: Optional[int] = Field(default=None, index=True)
+    slot_id: Optional[int] = Field(default=None, index=True)
+    subject: str = Field(default="", index=True)
+    desired_from: Optional[datetime] = Field(default=None, index=True)
+    desired_to: Optional[datetime] = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)  # active | notified | fulfilled | cancelled
+    note: str = Field(default="")
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class LastMinuteAlertSubscription(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    student_user_id: int = Field(index=True)
+    tutor_user_id: Optional[int] = Field(default=None, index=True)
+    subject: str = Field(default="", index=True)
+    only_today: bool = Field(default=True, index=True)
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RecurringBookingSeries(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True)
+    student_user_id: int = Field(index=True)
+    weekdays_json: str = Field(default="[]")
+    time_hm: str = Field(default="18:00")
+    duration_minutes: int = Field(default=60)
+    weeks_ahead: int = Field(default=4)
+    auto_attendance_confirm: bool = Field(default=False)
+    status: str = Field(default="active", index=True)  # active | paused | cancelled
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RecurringBookingSeriesItem(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    series_id: int = Field(index=True)
+    booking_id: int = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class ExamTrack(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    student_user_id: int = Field(index=True)
+    tutor_user_id: Optional[int] = Field(default=None, index=True)
+    exam_kind: str = Field(default="ЕГЭ", index=True)
+    exam_subject: str = Field(default="")
+    exam_date: Optional[datetime] = Field(default=None, index=True)
+    target_score: int = Field(default=0)
+    current_score: int = Field(default=0)
+    readiness_percent: int = Field(default=0)
+    weak_topics_json: str = Field(default="[]")
+    plan_by_weeks_json: str = Field(default="[]")
+    notes: str = Field(default="")
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BookingMeta(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    booking_id: int = Field(index=True, unique=True)
+    booking_type: str = Field(default="regular", index=True)  # regular | trial
+    tutor_comment: str = Field(default="")
+    tutor_comment_sent_at: Optional[datetime] = Field(default=None, index=True)
+    recurring_series_id: Optional[int] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class NotificationLog(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    recipient_key: str = Field(index=True)
+    entity_kind: str = Field(index=True)  # booking | homework | slot | digest
+    entity_id: int = Field(index=True)
+    kind: str = Field(index=True)  # homework_24h | parent_completed | ...
+    sent_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    note: str = Field(default="")
+
+
+class ReviewDetail(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    review_id: int = Field(index=True, unique=True)
+    explains_rating: Optional[int] = Field(default=None)
+    punctuality_rating: Optional[int] = Field(default=None)
+    materials_rating: Optional[int] = Field(default=None)
+    result_rating: Optional[int] = Field(default=None)
+    lessons_before_review: int = Field(default=0)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)

@@ -49,6 +49,19 @@ function roleTitle(role) {
   return 'Кабинет'
 }
 
+function attendanceStatusLabel(v) {
+  const s = String(v || 'pending')
+  if (s === 'confirmed') return 'подтверждено'
+  if (s === 'declined') return 'не подтверждено'
+  return 'ожидает подтверждения'
+}
+
+function riskLabel(v) {
+  if (v === 'high') return 'Высокий риск срыва'
+  if (v === 'medium') return 'Средний риск срыва'
+  return 'Низкий риск'
+}
+
 function bookingToCalendarEvent(b, meRole) {
   const startsIso = b?.slot_starts_at
   const endsIso = b?.slot_ends_at
@@ -233,6 +246,14 @@ export default function Dashboard() {
   const [catalog, setCatalog] = useState({ subjects: [], goals: [], levels: [], grades: [], languages: ['ru', 'en'] })
   const [backgroundsText, setBackgroundsText] = useState('')
   const [certLinksText, setCertLinksText] = useState('')
+  const [parentContact, setParentContact] = useState(null)
+  const [pulseMine, setPulseMine] = useState(null)
+  const [examMode, setExamMode] = useState(null)
+  const [weeklyDigest, setWeeklyDigest] = useState(null)
+  const [bookingMetaMap, setBookingMetaMap] = useState({})
+  const [waitlistItems, setWaitlistItems] = useState([])
+  const [lastMinuteSubs, setLastMinuteSubs] = useState([])
+  const [recurringForm, setRecurringForm] = useState({ tutor_user_id: '', weekdays: ['1','3'], time_hm: '18:00', duration_minutes: 60, weeks_ahead: 4, auto_attendance_confirm: true })
 
   const subjectOptions = useMemo(() => (catalog.subjects?.length ? catalog.subjects : [
     'Математика', 'Английский', 'Физика', 'Химия', 'Русский язык', 'Программирование'
@@ -277,7 +298,18 @@ export default function Dashboard() {
     setErr('')
     try {
       const b = await apiFetch('/api/bookings', { token })
-      setBookings(Array.isArray(b) ? b : [])
+      const bookingsArr = Array.isArray(b) ? b : []
+      setBookings(bookingsArr)
+      try {
+        if (bookingsArr.length) {
+          const metaRes = await apiFetch(`/api/bookings/meta?ids=${bookingsArr.map(x => x.id).join(',')}`, { token })
+          const mm = {}
+          for (const it of (metaRes?.items || [])) mm[it.booking_id] = it
+          setBookingMetaMap(mm)
+        } else {
+          setBookingMetaMap({})
+        }
+      } catch { setBookingMetaMap({}) }
 
       const st = await apiFetch('/api/me/settings', { token })
       setSettings(st || null)
@@ -293,9 +325,37 @@ export default function Dashboard() {
 
         const s = await apiFetch(`/api/slots/me`, { token })
         setSlots(Array.isArray(s) ? s : [])
+        try {
+          const wd = await apiFetch('/api/me/weekly-digest', { token })
+          setWeeklyDigest(wd?.digest || null)
+        } catch { setWeeklyDigest(null) }
+        try {
+          const pulse = await apiFetch('/api/pulse/mine', { token })
+          setPulseMine(pulse || null)
+        } catch { setPulseMine(null) }
       } else {
         const s = await apiFetch('/api/slots/available', { token })
         setSlots(Array.isArray(s) ? s : [])
+        try {
+          const pc = await apiFetch('/api/me/parent-contact', { token })
+          setParentContact(pc?.contact || { parent_name:'', relationship:'parent', parent_email:'', parent_telegram_chat_id:'', notify_lessons:true, notify_homework:true, notify_comments:true, is_active:true })
+        } catch { setParentContact(null) }
+        try {
+          const pulse = await apiFetch('/api/pulse/mine', { token })
+          setPulseMine(pulse?.pulse || null)
+        } catch { setPulseMine(null) }
+        try {
+          const ex = await apiFetch('/api/exam-mode', { token })
+          setExamMode(ex?.exam || { exam_kind:'ЕГЭ', exam_subject:'', exam_date:'', target_score:80, current_score:0, readiness_percent:0, weak_topics:[], plan_by_weeks:[] })
+        } catch { setExamMode(null) }
+        try {
+          const wl = await apiFetch('/api/waitlist', { token })
+          setWaitlistItems(Array.isArray(wl?.items) ? wl.items : [])
+        } catch { setWaitlistItems([]) }
+        try {
+          const lm = await apiFetch('/api/alerts/last-minute', { token })
+          setLastMinuteSubs(Array.isArray(lm?.items) ? lm.items : [])
+        } catch { setLastMinuteSubs([]) }
       }
     } catch (e) {
       setErr(e.message || 'Ошибка загрузки')
@@ -426,6 +486,39 @@ export default function Dashboard() {
     }
   }
 
+  async function setAttendanceStatus(bookingId, status, note = '') {
+    setSaving(true)
+    setErr('')
+    try {
+      await apiFetch(`/api/bookings/${bookingId}/attendance`, {
+        method: 'POST',
+        token,
+        body: { status, note: note || null }
+      })
+      await load()
+    } catch (e) {
+      setErr(e.message || 'Не удалось обновить подтверждение')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function repeatBookingOneClick(bookingId) {
+    setSaving(true)
+    setErr('')
+    try {
+      const res = await apiFetch(`/api/bookings/${bookingId}/repeat`, { method: 'POST', token })
+      await load()
+      const bid = res?.booking?.id
+      const mt = res?.match_type || 'matched'
+      alert(`Создана новая бронь #${bid}. Тип совпадения: ${mt}`)
+    } catch (e) {
+      setErr(e.message || 'Не удалось повторить запись')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function saveSettings() {
     if (!settings) return
     setSaving(true)
@@ -465,6 +558,93 @@ export default function Dashboard() {
     } finally {
       setSaving(false)
     }
+  }
+
+
+  async function saveParentContact() {
+    if (!parentContact) return
+    setSaving(true); setErr('')
+    try {
+      const out = await apiFetch('/api/me/parent-contact', { method: 'PUT', token, body: parentContact })
+      setParentContact(out?.contact || parentContact)
+    } catch (e) { setErr(e.message || 'Не удалось сохранить контакт родителя') }
+    finally { setSaving(false) }
+  }
+
+  async function saveExamMode() {
+    if (!examMode) return
+    setSaving(true); setErr('')
+    try {
+      const payload = {
+        exam_kind: examMode.exam_kind || 'ЕГЭ',
+        exam_subject: examMode.exam_subject || '',
+        exam_date: examMode.exam_date ? new Date(examMode.exam_date).toISOString() : null,
+        target_score: Number(examMode.target_score || 0),
+        current_score: Number(examMode.current_score || 0),
+        readiness_percent: Number(examMode.readiness_percent || 0),
+        weak_topics: Array.isArray(examMode.weak_topics) ? examMode.weak_topics : String(examMode.weak_topics || '').split(',').map(x => x.trim()).filter(Boolean),
+        plan_by_weeks: Array.isArray(examMode.plan_by_weeks) ? examMode.plan_by_weeks : String(examMode.plan_by_weeks || '').split('\n').map(x => x.trim()).filter(Boolean),
+      }
+      const out = await apiFetch('/api/exam-mode', { method: 'PUT', token, body: payload })
+      setExamMode(out?.exam || examMode)
+    } catch (e) { setErr(e.message || 'Не удалось сохранить exam mode') }
+    finally { setSaving(false) }
+  }
+
+  async function createRecurringSeries() {
+    setSaving(true); setErr('')
+    try {
+      const body = {
+        tutor_user_id: Number(recurringForm.tutor_user_id || 0),
+        weekdays: (recurringForm.weekdays || []).map(x => Number(x)),
+        time_hm: recurringForm.time_hm || '18:00',
+        duration_minutes: Number(recurringForm.duration_minutes || 60),
+        weeks_ahead: Number(recurringForm.weeks_ahead || 4),
+        auto_attendance_confirm: Boolean(recurringForm.auto_attendance_confirm),
+      }
+      const out = await apiFetch('/api/recurring/bookings', { method: 'POST', token, body })
+      alert(`Серия создана. Забронировано занятий: ${(out?.booked_booking_ids || []).length}`)
+      await load()
+    } catch (e) { setErr(e.message || 'Не удалось создать серию') }
+    finally { setSaving(false) }
+  }
+
+  async function addLastMinuteSub() {
+    setSaving(true); setErr('')
+    try {
+      const tutorId = Number(recurringForm.tutor_user_id || 0) || undefined
+      await apiFetch('/api/alerts/last-minute', { method: 'POST', token, body: { tutor_user_id: tutorId, only_today: true } })
+      const lm = await apiFetch('/api/alerts/last-minute', { token })
+      setLastMinuteSubs(Array.isArray(lm?.items) ? lm.items : [])
+    } catch (e) { setErr(e.message || 'Не удалось подписаться на last-minute') }
+    finally { setSaving(false) }
+  }
+
+  async function sendTutorCommentPrompt(bookingId) {
+    if (me.role === 'student') return
+    const comment = prompt('Короткий комментарий для ученика/родителя после урока:')
+    if (comment == null) return
+    setSaving(true); setErr('')
+    try {
+      await apiFetch(`/api/bookings/${bookingId}/tutor-comment`, { method: 'POST', token, body: { comment, send_to_parent: true } })
+      const metaRes = await apiFetch(`/api/bookings/meta?ids=${bookings.map(x => x.id).join(',')}`, { token })
+      const mm = {}
+      for (const it of (metaRes?.items || [])) mm[it.booking_id] = it
+      setBookingMetaMap(mm)
+    } catch (e) { setErr(e.message || 'Не удалось отправить комментарий') }
+    finally { setSaving(false) }
+  }
+
+  async function showTrialFollowup(bookingId) {
+    try {
+      const out = await apiFetch(`/api/bookings/${bookingId}/trial-followup`, { token })
+      const f = out?.followup
+      if (!f) return
+      alert(`План на 4 недели:
+- ${(f.plan_4_weeks || []).join('\n- ')}
+
+CTA: ${f?.cta?.primary || 'Купить пакет'}`)
+    } catch (e) { setErr(e.message || 'Не удалось загрузить follow-up пробного урока') }
   }
 
   if (!me) return null
@@ -749,6 +929,104 @@ export default function Dashboard() {
         </div>
       )}
 
+      <div className="card">
+        <div style={{ fontWeight: 900, fontSize: 18 }}>Новые фичи роста и удержания</div>
+        <div className="sub">Родительские уведомления, exam mode / pulse, recurring booking, last-minute и waitlist.</div>
+
+        {me.role === 'student' && (
+          <div className="grid" style={{ gap: 12, marginTop: 12 }}>
+            <div className="card">
+              <div style={{ fontWeight: 800 }}>Родительские уведомления</div>
+              <div className="small">Напоминание о занятии, факт урока, комментарий репетитора, ДЗ и дедлайн.</div>
+              <div className="label">Имя</div>
+              <input className="input" value={parentContact?.parent_name || ''} onChange={(e) => setParentContact(s => ({ ...(s || {}), parent_name: e.target.value }))} />
+              <div className="label">Email родителя</div>
+              <input className="input" value={parentContact?.parent_email || ''} onChange={(e) => setParentContact(s => ({ ...(s || {}), parent_email: e.target.value }))} placeholder="parent@example.com" />
+              <div className="label">Telegram chat id (опц.)</div>
+              <input className="input" value={parentContact?.parent_telegram_chat_id || ''} onChange={(e) => setParentContact(s => ({ ...(s || {}), parent_telegram_chat_id: e.target.value }))} placeholder="123456789" />
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 8 }}>
+                <label className="small"><input type="checkbox" checked={Boolean(parentContact?.notify_lessons)} onChange={(e) => setParentContact(s => ({ ...(s || {}), notify_lessons: e.target.checked }))} /> уроки</label>
+                <label className="small"><input type="checkbox" checked={Boolean(parentContact?.notify_homework)} onChange={(e) => setParentContact(s => ({ ...(s || {}), notify_homework: e.target.checked }))} /> ДЗ</label>
+                <label className="small"><input type="checkbox" checked={Boolean(parentContact?.notify_comments)} onChange={(e) => setParentContact(s => ({ ...(s || {}), notify_comments: e.target.checked }))} /> комментарии</label>
+              </div>
+              <button className="btn btnPrimary" style={{ marginTop: 10 }} onClick={saveParentContact} disabled={saving}>Сохранить контакт</button>
+            </div>
+
+            <div className="card">
+              <div style={{ fontWeight: 800 }}>Режим экзамена + пульс ученика</div>
+              {pulseMine && (
+                <div className="small" style={{ marginTop: 6 }}>
+                  Пульс: посещаемость {pulseMine?.attendance?.attendance_percent || 0}% • ДЗ {pulseMine?.homework?.completion_percent || 0}% • мини-тесты {pulseMine?.mini_tests?.avg_score_percent ?? '—'}% • пробелы: {pulseMine?.gaps?.count || 0}
+                </div>
+              )}
+              <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+                <div className="label">Экзамен / формат</div>
+                <input className="input" value={examMode?.exam_kind || ''} onChange={(e) => setExamMode(s => ({ ...(s || {}), exam_kind: e.target.value }))} placeholder="ЕГЭ / ОГЭ / ЦТ / ЦЭ" />
+                <div className="label">Предмет</div>
+                <input className="input" value={examMode?.exam_subject || ''} onChange={(e) => setExamMode(s => ({ ...(s || {}), exam_subject: e.target.value }))} placeholder="Математика" />
+                <div className="label">Дата экзамена</div>
+                <input className="input" type="datetime-local" value={examMode?.exam_date ? toLocalInputValue(examMode.exam_date) : ''} onChange={(e) => setExamMode(s => ({ ...(s || {}), exam_date: e.target.value }))} />
+                <div className="grid" style={{ gap: 8 }}>
+                  <input className="input" type="number" value={examMode?.target_score || 0} onChange={(e) => setExamMode(s => ({ ...(s || {}), target_score: e.target.value }))} placeholder="Цель по баллам" />
+                  <input className="input" type="number" value={examMode?.current_score || 0} onChange={(e) => setExamMode(s => ({ ...(s || {}), current_score: e.target.value }))} placeholder="Текущий результат" />
+                  <input className="input" type="number" min="0" max="100" value={examMode?.readiness_percent || 0} onChange={(e) => setExamMode(s => ({ ...(s || {}), readiness_percent: e.target.value }))} placeholder="Готовность %" />
+                </div>
+                <div className="label">Слабые темы (через запятую)</div>
+                <input className="input" value={Array.isArray(examMode?.weak_topics) ? examMode.weak_topics.join(', ') : (examMode?.weak_topics || '')} onChange={(e) => setExamMode(s => ({ ...(s || {}), weak_topics: e.target.value }))} />
+                <div className="label">План по неделям (каждая строка)</div>
+                <textarea className="textarea" value={Array.isArray(examMode?.plan_by_weeks) ? examMode.plan_by_weeks.join('\n') : (examMode?.plan_by_weeks || '')} onChange={(e) => setExamMode(s => ({ ...(s || {}), plan_by_weeks: e.target.value }))} />
+                <button className="btn btnPrimary" onClick={saveExamMode} disabled={saving}>Сохранить exam mode</button>
+              </div>
+            </div>
+
+            <div className="card">
+              <div style={{ fontWeight: 800 }}>Серии занятий (recurring booking)</div>
+              <div className="small">Например: каждый вт/чт в 18:00. Система забронирует подходящие открытые слоты и включит автоподтверждение.</div>
+              <div className="label">Tutor user_id</div>
+              <input className="input" type="number" value={recurringForm.tutor_user_id} onChange={(e) => setRecurringForm(s => ({ ...s, tutor_user_id: e.target.value }))} placeholder="ID репетитора" />
+              <div className="label">Дни недели (0=Пн…6=Вс, через запятую)</div>
+              <input className="input" value={(recurringForm.weekdays || []).join(',')} onChange={(e) => setRecurringForm(s => ({ ...s, weekdays: e.target.value.split(',').map(x => x.trim()).filter(Boolean) }))} placeholder="1,3" />
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input className="input" style={{ flex: 1, minWidth: 140 }} value={recurringForm.time_hm} onChange={(e) => setRecurringForm(s => ({ ...s, time_hm: e.target.value }))} placeholder="18:00" />
+                <input className="input" style={{ flex: 1, minWidth: 140 }} type="number" value={recurringForm.duration_minutes} onChange={(e) => setRecurringForm(s => ({ ...s, duration_minutes: e.target.value }))} placeholder="60 мин" />
+                <input className="input" style={{ flex: 1, minWidth: 140 }} type="number" value={recurringForm.weeks_ahead} onChange={(e) => setRecurringForm(s => ({ ...s, weeks_ahead: e.target.value }))} placeholder="4 недели" />
+              </div>
+              <label className="small" style={{ display: 'block', marginTop: 8 }}><input type="checkbox" checked={Boolean(recurringForm.auto_attendance_confirm)} onChange={(e) => setRecurringForm(s => ({ ...s, auto_attendance_confirm: e.target.checked }))} /> автоподтверждение ученика</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                <button className="btn btnPrimary" onClick={createRecurringSeries} disabled={saving}>Создать серию</button>
+                <button className="btn" onClick={addLastMinuteSub} disabled={saving}>Подписаться на last-minute</button>
+              </div>
+              <div className="small" style={{ marginTop: 8 }}>Waitlist: {waitlistItems.length} • Last-minute подписки: {lastMinuteSubs.length}</div>
+            </div>
+          </div>
+        )}
+
+        {me.role === 'tutor' && (
+          <div className="grid" style={{ gap: 12, marginTop: 12 }}>
+            <div className="card">
+              <div style={{ fontWeight: 800 }}>Weekly digest (preview)</div>
+              {!weeklyDigest ? <div className="small">Нет данных.</div> : (
+                <div className="small" style={{ whiteSpace: 'pre-wrap' }}>
+                  Проведено: {weeklyDigest.lessons_done} • Отмены: {weeklyDigest.cancelled}
+                  {'\n'}Новые ученики: {weeklyDigest.new_students} • Давно не записывались: {(weeklyDigest.dormant_students || []).length}
+                  {'\n'}Выручка (trial): {weeklyDigest.earnings_7d}
+                </div>
+              )}
+            </div>
+            {pulseMine?.items ? (
+              <div className="card">
+                <div style={{ fontWeight: 800 }}>Пульс учеников</div>
+                <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+                  {pulseMine.items.slice(0, 8).map((x) => (
+                    <div key={x.student_user_id} className="small">#{x.student_user_id} {x.student_hint}: посещаемость {x.attendance?.attendance_percent || 0}% • ДЗ {x.homework?.completion_percent || 0}% • пробелы {x.gaps?.count || 0}</div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+
       <LessonsCalendarCard bookings={bookings} role={me.role} settings={settings} balanceInfo={balanceInfo} />
 
       <div className="card">
@@ -769,15 +1047,29 @@ export default function Dashboard() {
                 <div key={b.id} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
-                      <div style={{ fontWeight: 800 }}>Бронь #{b.id} • {b.status}</div>
+                      <div style={{ fontWeight: 800 }}>Бронь #{b.id} • {b.status}{bookingMetaMap?.[b.id]?.booking_type === 'trial' ? ' • пробный урок' : ''}</div>
                       <div className="small">Слот #{b.slot_id} • комната: {b.room_id}</div>
                       {starts && <div className="small">Время: {starts}{ends ? ` — ${ends}` : ''}</div>}
                       <div className="small">Создано: {new Date(b.created_at).toLocaleString()}</div>
                       <div className="small">Стоимость: {b.price || 0} ₽ • оплата: {b.payment_status || 'unpaid'}</div>
+                      <div className="small">Подтверждение: ученик — {attendanceStatusLabel(b.student_attendance_status)} • репетитор — {attendanceStatusLabel(b.tutor_attendance_status)}</div>
+                      {Number(b.reschedule_count || 0) > 0 && <div className="small">Переносов: {b.reschedule_count}{b.last_reschedule_reason ? ` • ${b.last_reschedule_reason}` : ''}</div>}
+                      {!!b.risk_status && b.risk_status !== 'low' && (
+                        <div className="footerNote" style={{ marginTop: 6 }}>
+                          <b>{riskLabel(b.risk_status)}</b>{Array.isArray(b.risk_reasons) && b.risk_reasons.length ? `: ${b.risk_reasons.join('; ')}` : ''}
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                       <Link className="btn btnPrimary" to={`/room/${b.room_id}`}>Открыть комнату</Link>
+
+                      {!isCancelled && !isDone && (me.role === 'student' || me.role === 'tutor') && (
+                        <>
+                          <button className="btn" onClick={() => setAttendanceStatus(b.id, 'confirmed')} disabled={saving}>Подтверждаю</button>
+                          <button className="btn" onClick={() => setAttendanceStatus(b.id, 'declined', me.role === 'student' ? 'Не могу сегодня' : 'Нужно перенести / не смогу провести')} disabled={saving}>Не подтверждаю</button>
+                        </>
+                      )}
 
                       {me.role === 'student' && (b.payment_status !== 'paid') && !isCancelled && (
                         <button className="btn btnPrimary" onClick={() => payBookingNow(b.id)} disabled={saving}>Оплатить</button>
@@ -792,11 +1084,16 @@ export default function Dashboard() {
                       )}
 
                       {!isCancelled && isDone && me.role !== 'tutor' && (
-                        <button className="btn" onClick={() => setReviewBookingId(b.id)}>Оставить отзыв</button>
+                        <>
+                          <button className="btn" onClick={() => setReviewBookingId(b.id)}>Оставить отзыв</button>
+                          {me.role === 'student' && <button className="btn" onClick={() => repeatBookingOneClick(b.id)} disabled={saving}>Повторить слот</button>}
+                          {me.role === 'student' && bookingMetaMap?.[b.id]?.booking_type === 'trial' && <button className="btn" onClick={() => showTrialFollowup(b.id)}>План после пробного</button>}
+                        </>
                       )}
 
                       {isCancelled && <div className="small">Отменено</div>}
                       {isDone && <div className="small">Завершено</div>}
+                      {isDone && (me.role === 'tutor' || me.role === 'admin') && <button className="btn" onClick={() => sendTutorCommentPrompt(b.id)} disabled={saving}>Комментарий родителю</button>}
                     </div>
                   </div>
                 </div>

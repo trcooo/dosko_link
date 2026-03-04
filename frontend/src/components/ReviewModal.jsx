@@ -25,6 +25,8 @@ export default function ReviewModal({ open, bookingId, token, onClose, onSubmitt
   const [existing, setExisting] = useState(null)
   const [stars, setStars] = useState(5)
   const [text, setText] = useState('')
+  const [criteria, setCriteria] = useState({ explains_rating: 5, punctuality_rating: 5, materials_rating: 5, result_rating: 5 })
+  const [existingDetail, setExistingDetail] = useState(null)
   const [err, setErr] = useState('')
 
   useEffect(() => {
@@ -34,13 +36,18 @@ export default function ReviewModal({ open, bookingId, token, onClose, onSubmitt
     setExisting(null)
     setText('')
     setStars(5)
+    setCriteria({ explains_rating: 5, punctuality_rating: 5, materials_rating: 5, result_rating: 5 })
+    setExistingDetail(null)
 
     async function load() {
       setLoading(true)
       try {
         const data = await apiFetch(`/api/bookings/${bookingId}/review`, { token })
+        let detail = null
+        try { detail = await apiFetch(`/api/bookings/${bookingId}/review/details`, { token }) } catch {}
         if (!mounted) return
         setExisting(data?.review || null)
+        setExistingDetail(detail?.detail || null)
       } catch (e) {
         if (mounted) setErr(e.message || 'Ошибка загрузки')
       } finally {
@@ -61,6 +68,9 @@ export default function ReviewModal({ open, bookingId, token, onClose, onSubmitt
         token,
         body: { stars, text }
       })
+      try {
+        await apiFetch(`/api/bookings/${bookingId}/review/details`, { method: 'POST', token, body: criteria })
+      } catch {}
       onSubmitted?.()
       onClose?.()
     } catch (e) {
@@ -90,6 +100,12 @@ export default function ReviewModal({ open, bookingId, token, onClose, onSubmitt
           <div className="card" style={{ marginTop: 12 }}>
             <div style={{ fontWeight: 800 }}>Отзыв уже оставлен</div>
             <div className="small">{existing.stars}★ • {new Date(existing.created_at).toLocaleString()}</div>
+            {existingDetail ? (
+              <div className="small" style={{ marginTop: 8 }}>
+                Критерии: объясняет {existingDetail.explains_rating || '—'}★ • пунктуальность {existingDetail.punctuality_rating || '—'}★ • материалы {existingDetail.materials_rating || '—'}★ • результат {existingDetail.result_rating || '—'}★
+                {existingDetail.long_term_student ? ' • долгосрочный ученик' : ''}
+              </div>
+            ) : null}
             {existing.text ? <div style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{existing.text}</div> : <div className="small" style={{ marginTop: 8 }}>Без текста.</div>}
           </div>
         )}
@@ -98,6 +114,26 @@ export default function ReviewModal({ open, bookingId, token, onClose, onSubmitt
           <div style={{ marginTop: 12 }}>
             <div className="label">Оценка</div>
             <StarsPicker value={stars} onChange={setStars} />
+
+            <div className="label">Критерии</div>
+            <div className="grid" style={{ gap: 10 }}>
+              <div>
+                <div className="small">Понятно объясняет</div>
+                <StarsPicker value={criteria.explains_rating} onChange={(v) => setCriteria(s => ({ ...s, explains_rating: v }))} />
+              </div>
+              <div>
+                <div className="small">Пунктуальность</div>
+                <StarsPicker value={criteria.punctuality_rating} onChange={(v) => setCriteria(s => ({ ...s, punctuality_rating: v }))} />
+              </div>
+              <div>
+                <div className="small">Материалы</div>
+                <StarsPicker value={criteria.materials_rating} onChange={(v) => setCriteria(s => ({ ...s, materials_rating: v }))} />
+              </div>
+              <div>
+                <div className="small">Результат</div>
+                <StarsPicker value={criteria.result_rating} onChange={(v) => setCriteria(s => ({ ...s, result_rating: v }))} />
+              </div>
+            </div>
 
             <div className="label">Комментарий (необязательно)</div>
             <textarea className="textarea" value={text} onChange={(e) => setText(e.target.value)} placeholder="Что было полезно? Что улучшить?" />

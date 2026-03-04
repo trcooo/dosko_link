@@ -121,7 +121,12 @@ export default function TutorProfile() {
   const [tutor, setTutor] = useState(null)
   const [slots, setSlots] = useState([])
   const [reviews, setReviews] = useState([])
+  const [reviewsExtended, setReviewsExtended] = useState([])
+  const [methodology, setMethodology] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [trialBusyId, setTrialBusyId] = useState(null)
+  const [waitlistBusy, setWaitlistBusy] = useState(false)
+  const [lastMinuteBusy, setLastMinuteBusy] = useState(false)
   const [err, setErr] = useState('')
   const [bookingId, setBookingId] = useState(null)
   const [bookingSuccess, setBookingSuccess] = useState(null)
@@ -135,10 +140,16 @@ export default function TutorProfile() {
         const t = await apiFetch(`/api/tutors/${id}`)
         const s = await apiFetch(`/api/slots/available?tutor_user_id=${t.user_id}`)
         const r = await apiFetch(`/api/tutors/${id}/reviews`)
+        let rx = null
+        let m = null
+        try { rx = await apiFetch(`/api/tutors/${id}/reviews/extended`) } catch {}
+        try { m = await apiFetch(`/api/tutors/${id}/methodology`) } catch {}
         if (!mounted) return
         setTutor(t)
         setSlots(Array.isArray(s) ? s : [])
         setReviews(Array.isArray(r) ? r : [])
+        setReviewsExtended(Array.isArray(rx?.items) ? rx.items : [])
+        setMethodology(m?.methodology || null)
       } catch (e) {
         if (mounted) setErr(e.message || 'Ошибка загрузки')
       } finally {
@@ -171,6 +182,64 @@ export default function TutorProfile() {
       setBookingId(null)
     }
   }
+
+
+  async function bookTrial(slotId) {
+    if (!token) return nav('/login')
+    if (me?.role === 'tutor') return setErr('Репетитор не может бронировать слоты.')
+    setTrialBusyId(slotId)
+    setErr('')
+    try {
+      await apiFetch(`/api/slots/${slotId}/book-trial`, { method: 'POST', token })
+      nav('/dashboard')
+    } catch (e) {
+      setErr(e.message || 'Ошибка записи на пробный урок')
+    } finally {
+      setTrialBusyId(null)
+    }
+  }
+
+  async function joinWaitlist() {
+    if (!token) return nav('/login')
+    setWaitlistBusy(true)
+    setErr('')
+    try {
+      await apiFetch('/api/waitlist', {
+        method: 'POST',
+        token,
+        body: {
+          tutor_user_id: tutor?.user_id,
+          subject: (tutor?.subjects || [])[0] || '',
+          note: 'Жду освободившийся слот',
+        }
+      })
+      alert('Добавили в лист ожидания. При отмене/освобождении слота придет уведомление.')
+    } catch (e) {
+      setErr(e.message || 'Не удалось добавить в лист ожидания')
+    } finally {
+      setWaitlistBusy(false)
+    }
+  }
+
+  async function subscribeLastMinute() {
+    if (!token) return nav('/login')
+    setLastMinuteBusy(true)
+    setErr('')
+    try {
+      await apiFetch('/api/alerts/last-minute', {
+        method: 'POST',
+        token,
+        body: { tutor_user_id: tutor?.user_id, subject: (tutor?.subjects || [])[0] || '', only_today: true }
+      })
+      alert('Подписка на last-minute слоты включена.')
+    } catch (e) {
+      setErr(e.message || 'Не удалось оформить подписку')
+    } finally {
+      setLastMinuteBusy(false)
+    }
+  }
+
+  const reviewsToRender = Array.isArray(reviewsExtended) && reviewsExtended.length ? reviewsExtended : reviews
 
   if (loading) return <div className="card">Загрузка…</div>
   if (err && !tutor) return <div className="card">{err}</div>
@@ -235,6 +304,17 @@ export default function TutorProfile() {
           <div style={{ fontWeight: 900, fontSize: 18 }}>О репетиторе</div>
           <div className="sub" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{tutor.bio || 'Описание пока не заполнено.'}</div>
 
+          {methodology && (methodology.fit_for || methodology.lesson_flow || methodology.homework_load || methodology.first_month_plan || methodology.avg_results) ? (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 800 }}>Структурированная методика</div>
+              {methodology.fit_for ? <div style={{ marginTop: 8 }}><b>Для кого подходит:</b><div className="small" style={{ whiteSpace: 'pre-wrap' }}>{methodology.fit_for}</div></div> : null}
+              {methodology.lesson_flow ? <div style={{ marginTop: 8 }}><b>Как проходит урок:</b><div className="small" style={{ whiteSpace: 'pre-wrap' }}>{methodology.lesson_flow}</div></div> : null}
+              {methodology.homework_load ? <div style={{ marginTop: 8 }}><b>Сколько ДЗ:</b><div className="small" style={{ whiteSpace: 'pre-wrap' }}>{methodology.homework_load}</div></div> : null}
+              {methodology.first_month_plan ? <div style={{ marginTop: 8 }}><b>План на первый месяц:</b><div className="small" style={{ whiteSpace: 'pre-wrap' }}>{methodology.first_month_plan}</div></div> : null}
+              {methodology.avg_results ? <div style={{ marginTop: 8 }}><b>Средний результат учеников:</b><div className="small" style={{ whiteSpace: 'pre-wrap' }}>{methodology.avg_results}</div></div> : null}
+            </div>
+          ) : null}
+
           {tutor.education && (
             <div className="card" style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 800 }}>Образование</div>
@@ -272,6 +352,10 @@ export default function TutorProfile() {
             <div style={{ fontWeight: 900, fontSize: 18 }}>Свободные слоты и календарь</div>
             <div className="small">{slots.length} доступно</div>
           </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            <button className="btn" onClick={subscribeLastMinute} disabled={lastMinuteBusy}>{lastMinuteBusy ? 'Подписываем…' : 'Слоты горят: подписаться'}</button>
+            <button className="btn" onClick={joinWaitlist} disabled={waitlistBusy}>{waitlistBusy ? 'Добавляем…' : 'В лист ожидания'}</button>
+          </div>
 
           {tutor.public_schedule_note ? (
             <div className="card" style={{ marginTop: 12 }}>
@@ -293,6 +377,15 @@ export default function TutorProfile() {
                   <button className="btn btnPrimary" style={{ marginTop: 10 }} onClick={() => book(s.id)} disabled={bookingId === s.id}>
                     {bookingId === s.id ? 'Бронируем…' : 'Записаться'}
                   </button>
+                  {(() => {
+                    const mins = Math.max(1, Math.round((new Date(s.ends_at) - new Date(s.starts_at)) / 60000))
+                    if (mins < 15 || mins > 45) return null
+                    return (
+                      <button className="btn" style={{ marginTop: 8 }} onClick={() => bookTrial(s.id)} disabled={trialBusyId === s.id}>
+                        {trialBusyId === s.id ? 'Запись…' : 'Пробный урок (20–30 мин)'}
+                      </button>
+                    )
+                  })()}
                 </div>
               ))
             )}
@@ -311,19 +404,26 @@ export default function TutorProfile() {
       <div className="card">
         <div className="panelTitle">
           <div style={{ fontWeight: 900, fontSize: 18 }}>Отзывы</div>
-          <div className="small">{reviews.length}</div>
+          <div className="small">{reviewsToRender.length}</div>
         </div>
-        {reviews.length === 0 ? (
+        {reviewsToRender.length === 0 ? (
           <div className="small">Пока нет отзывов. Они появляются после завершённого занятия.</div>
         ) : (
           <div className="grid" style={{ gap: 10 }}>
-            {reviews.slice(0, 20).map(r => (
+            {reviewsToRender.slice(0, 20).map(r => (
               <div key={r.id} className="card" style={{ border: '1px solid var(--border)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                   <div style={{ fontWeight: 800 }}><Stars n={r.stars} /> {r.stars}★</div>
                   <div className="small">{new Date(r.created_at).toLocaleDateString()}</div>
                 </div>
                 <div className="small" style={{ marginTop: 4 }}>{r.student_hint}</div>
+                {r.long_term_student ? <div className="small" style={{ color: 'var(--success)', marginTop: 4 }}>Бейдж: долгосрочный ученик (10+ занятий)</div> : null}
+                {r.lessons_before_review ? <div className="small">Отзыв после {r.lessons_before_review} занятий</div> : null}
+                {r.criteria && (r.criteria.explains_rating || r.criteria.punctuality_rating || r.criteria.materials_rating || r.criteria.result_rating) ? (
+                  <div className="small" style={{ marginTop: 4 }}>
+                    Критерии: объясняет {r.criteria.explains_rating || '—'}★ • пунктуальность {r.criteria.punctuality_rating || '—'}★ • материалы {r.criteria.materials_rating || '—'}★ • результат {r.criteria.result_rating || '—'}★
+                  </div>
+                ) : null}
                 <div style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{r.text || 'Без комментария.'}</div>
               </div>
             ))}

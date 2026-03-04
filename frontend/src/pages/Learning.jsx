@@ -79,6 +79,16 @@ export default function Learning() {
   const [topicStatus, setTopicStatus] = useState('todo')
   const [topicNote, setTopicNote] = useState('')
 
+  // Tutor retention features: mini-CRM + templates
+  const [crmStudentId, setCrmStudentId] = useState('')
+  const [crmCard, setCrmCard] = useState({ goal: '', weak_topics: [], notes: '', tags: [] })
+  const [crmSummary, setCrmSummary] = useState(null)
+  const [tplItems, setTplItems] = useState([])
+  const [tplKind, setTplKind] = useState('homework')
+  const [tplTitle, setTplTitle] = useState('')
+  const [tplBody, setTplBody] = useState('')
+  const [tplSendBookingId, setTplSendBookingId] = useState('')
+
   useEffect(() => {
     if (authLoading) return
     if (!me) nav('/login')
@@ -98,6 +108,7 @@ export default function Learning() {
         if (!planStudentId && Array.isArray(s) && s[0]?.id) setPlanStudentId(String(s[0].id))
         if (!libStudentId && Array.isArray(s) && s[0]?.id) setLibStudentId(String(s[0].id))
         if (!quizStudentId && Array.isArray(s) && s[0]?.id) setQuizStudentId(String(s[0].id))
+        if (!crmStudentId && Array.isArray(s) && s[0]?.id) setCrmStudentId(String(s[0].id))
       }
     } catch (e) {
       setErr(e.message || 'Ошибка загрузки')
@@ -568,6 +579,16 @@ export default function Learning() {
     }
   }
 
+  useEffect(() => {
+    if (!isTutor || !token) return
+    loadTemplatesMini()
+  }, [isTutor, token])
+
+  useEffect(() => {
+    if (!isTutor || !token || !crmStudentId) return
+    loadCrmMini()
+  }, [isTutor, token, crmStudentId])
+
   async function downloadMaterial(m) {
     try {
       const res = await fetch(apiUrl(`/api/materials/${m.id}`), { headers: { Authorization: `Bearer ${token}` } })
@@ -584,6 +605,65 @@ export default function Learning() {
     } catch (e) {
       setErr(e.message || 'Не удалось скачать')
     }
+  }
+
+
+  async function loadTemplatesMini() {
+    if (!isTutor) return
+    try {
+      const out = await apiFetch('/api/templates', { token })
+      setTplItems(Array.isArray(out?.items) ? out.items : [])
+    } catch (e) { setErr(e.message || 'Не удалось загрузить шаблоны') }
+  }
+
+  async function createTemplateMini() {
+    if (!isTutor || !tplTitle.trim() || !tplBody.trim()) return
+    setBusy(true); setErr('')
+    try {
+      await apiFetch('/api/templates', { method: 'POST', token, body: { kind: tplKind, title: tplTitle.trim(), body: tplBody, channel: 'email' } })
+      setTplTitle(''); setTplBody('')
+      await loadTemplatesMini()
+    } catch (e) { setErr(e.message || 'Не удалось создать шаблон') }
+    finally { setBusy(false) }
+  }
+
+  async function sendTemplateMini(templateId) {
+    if (!tplSendBookingId) { setErr('Укажи booking_id для отправки шаблона'); return }
+    setBusy(true); setErr('')
+    try {
+      await apiFetch(`/api/templates/${templateId}/send`, { method: 'POST', token, body: { booking_id: Number(tplSendBookingId) } })
+      alert('Шаблон отправлен ученику (email/telegram по настройкам)')
+    } catch (e) { setErr(e.message || 'Не удалось отправить шаблон') }
+    finally { setBusy(false) }
+  }
+
+  async function loadCrmMini() {
+    if (!isTutor || !crmStudentId) return
+    setErr('')
+    try {
+      const [card, summary] = await Promise.all([
+        apiFetch(`/api/crm/student/${Number(crmStudentId)}`, { token }),
+        apiFetch(`/api/crm/students/${Number(crmStudentId)}/summary`, { token }),
+      ])
+      setCrmCard(card?.card || { goal: '', weak_topics: [], notes: '', tags: [] })
+      setCrmSummary(summary || null)
+    } catch (e) { setErr(e.message || 'Не удалось загрузить mini-CRM') }
+  }
+
+  async function saveCrmMini() {
+    if (!isTutor || !crmStudentId) return
+    setBusy(true); setErr('')
+    try {
+      const payload = {
+        goal: crmCard.goal || '',
+        weak_topics: Array.isArray(crmCard.weak_topics) ? crmCard.weak_topics : String(crmCard.weak_topics || '').split(',').map(x => x.trim()).filter(Boolean),
+        notes: crmCard.notes || '',
+        tags: Array.isArray(crmCard.tags) ? crmCard.tags : String(crmCard.tags || '').split(',').map(x => x.trim()).filter(Boolean),
+      }
+      await apiFetch(`/api/crm/student/${Number(crmStudentId)}`, { method: 'POST', token, body: payload })
+      await loadCrmMini()
+    } catch (e) { setErr(e.message || 'Не удалось сохранить mini-CRM') }
+    finally { setBusy(false) }
   }
 
   if (!me) return null
@@ -612,6 +692,77 @@ export default function Learning() {
           <button className={tab === 'quizzes' ? 'btn btnPrimary' : 'btn'} onClick={() => setTab('quizzes')}>Тесты</button>
         </div>
       </div>
+
+      {isTutor && (
+        <div className="grid" style={{ gap: 12 }}>
+          <div className="card">
+            <div style={{ fontWeight: 900, fontSize: 18 }}>Мини-CRM репетитора</div>
+            <div className="sub">Карточка ученика, цель, слабые темы, заметки, история занятий/ДЗ/пульс.</div>
+            <div className="row" style={{ gap: 10, alignItems: 'end' }}>
+              <div style={{ flex: 1 }}>
+                <div className="label">Ученик</div>
+                <select className="select" value={crmStudentId} onChange={(e) => setCrmStudentId(e.target.value)}>
+                  {studentOptions.length === 0 ? <option value="">Нет учеников</option> : studentOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <button className="btn" onClick={loadCrmMini}>Обновить CRM</button>
+            </div>
+            <div className="label">Цель</div>
+            <input className="input" value={crmCard?.goal || ''} onChange={(e) => setCrmCard(s => ({ ...(s || {}), goal: e.target.value }))} placeholder="Напр.: ЕГЭ 80+, закрыть геометрию" />
+            <div className="label">Слабые темы (через запятую)</div>
+            <input className="input" value={Array.isArray(crmCard?.weak_topics) ? crmCard.weak_topics.join(', ') : (crmCard?.weak_topics || '')} onChange={(e) => setCrmCard(s => ({ ...(s || {}), weak_topics: e.target.value }))} />
+            <div className="label">Заметки по урокам</div>
+            <textarea className="textarea" value={crmCard?.notes || ''} onChange={(e) => setCrmCard(s => ({ ...(s || {}), notes: e.target.value }))} />
+            <button className="btn btnPrimary" onClick={saveCrmMini} disabled={busy || !crmStudentId}>Сохранить mini-CRM</button>
+            {crmSummary && (
+              <div className="card" style={{ marginTop: 10 }}>
+                <div className="small">Пульс: посещаемость {crmSummary?.pulse?.attendance?.attendance_percent || 0}% • ДЗ {crmSummary?.pulse?.homework?.completion_percent || 0}% • мини-тесты {crmSummary?.pulse?.mini_tests?.avg_score_percent ?? '—'}%</div>
+                <div className="small">История занятий: {(crmSummary?.history || []).length} • заметок: {(crmSummary?.lesson_notes || []).length} • ДЗ: {(crmSummary?.homework || []).length}</div>
+                {!!(crmSummary?.card?.goal) && <div className="small">Цель: {crmSummary.card.goal}</div>}
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ fontWeight: 900, fontSize: 18 }}>Шаблоны сообщений / ДЗ</div>
+            <div className="sub">Напоминание, что повторить, ДЗ, перенос. Можно отправить ученику по booking_id.</div>
+            <div className="row" style={{ gap: 10 }}>
+              <div style={{ width: 220 }}>
+                <div className="label">Тип</div>
+                <select className="select" value={tplKind} onChange={(e) => setTplKind(e.target.value)}>
+                  <option value="reminder">reminder</option>
+                  <option value="homework">homework</option>
+                  <option value="reschedule">reschedule</option>
+                  <option value="general">general</option>
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div className="label">Название</div>
+                <input className="input" value={tplTitle} onChange={(e) => setTplTitle(e.target.value)} placeholder="Домашнее задание после урока" />
+              </div>
+            </div>
+            <div className="label">Текст (переменные: {{student_mask}}, {{booking_id}}, {{slot_start}})</div>
+            <textarea className="textarea" value={tplBody} onChange={(e) => setTplBody(e.target.value)} placeholder="Повтори тему ..., ДЗ: ..." />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn btnPrimary" onClick={createTemplateMini} disabled={busy || !tplTitle.trim() || !tplBody.trim()}>Сохранить шаблон</button>
+              <button className="btn" onClick={loadTemplatesMini}>Обновить список</button>
+            </div>
+            <div className="label" style={{ marginTop: 10 }}>booking_id для отправки</div>
+            <input className="input" type="number" value={tplSendBookingId} onChange={(e) => setTplSendBookingId(e.target.value)} placeholder="Напр. 123" />
+            <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+              {(tplItems || []).slice(0, 8).map((tpl) => (
+                <div key={tpl.id} className="card">
+                  <div style={{ fontWeight: 800 }}>{tpl.title || `Шаблон #${tpl.id}`}</div>
+                  <div className="small">{tpl.kind} • {tpl.channel}</div>
+                  <div className="small" style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{String(tpl.body || '').slice(0, 180)}{String(tpl.body || '').length > 180 ? '…' : ''}</div>
+                  <button className="btn" style={{ marginTop: 8 }} onClick={() => sendTemplateMini(tpl.id)} disabled={busy}>Отправить по booking_id</button>
+                </div>
+              ))}
+              {(!tplItems || tplItems.length === 0) && <div className="small">Пока нет шаблонов.</div>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {tab === 'homework' && (
         <div className="card">
