@@ -164,7 +164,7 @@ export default function Home() {
     <div className="grid" style={{ gap: 16 }}>
       <div className="hero">
         <div className="heroInner">
-          <div className="heroBadge">MVP v0 • без встроенных оплат</div>
+          <div className="heroBadge">DoskoLink • MVP v0 • без встроенных оплат</div>
           <div className="heroTitle">Найдите репетитора и проведите урок прямо на платформе</div>
           <div className="heroSub">
             Маркетплейс репетиторов → бронирование слота → комната урока (видео/чат/доска) → отзыв и рейтинг.

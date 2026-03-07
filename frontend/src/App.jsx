@@ -22,11 +22,10 @@ function NavBar() {
   return (
     <div className="nav">
       <div className="navInner">
-        <Link to="/" className="brand">
-          <div className="badge">DL</div>
-          <div>
-            <div>ДоскоЛинк</div>
-            <div className="small">MVP без оплат</div>
+        <Link to="/" className="brand" aria-label="DoskoLink — главная">
+          <img className="brandLogo" src="/doskolink-logo.png" alt="DoskoLink" />
+          <div className="brandMeta">
+            <div className="small">Платформа для репетиторов</div>
           </div>
         </Link>
 
