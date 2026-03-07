@@ -250,6 +250,15 @@ def _send_telegram(chat_id: str, text_body: str) -> None:
         pass
 
 
+def _notify_user_direct(u: Optional[User], subject: str, text_body: str) -> None:
+    if not u:
+        return
+    if getattr(u, "notify_email", True):
+        _send_email(u.email, subject, text_body)
+    if getattr(u, "notify_telegram", False) and getattr(u, "telegram_chat_id", None):
+        _send_telegram(u.telegram_chat_id, text_body)
+
+
 def _notify_booking_event(
     kind: str,
     booking: Booking,
@@ -281,12 +290,7 @@ def _notify_booking_event(
         base += f"\n{extra}"
 
     for u in [tutor, student]:
-        if not u:
-            continue
-        if getattr(u, "notify_email", True):
-            _send_email(u.email, subj, base)
-        if getattr(u, "notify_telegram", False) and getattr(u, "telegram_chat_id", None):
-            _send_telegram(u.telegram_chat_id, base)
+        _notify_user_direct(u, subj, base)
 
 
 # -----------------
@@ -2360,14 +2364,16 @@ def cron_send_reminders(
     now = _utcnow()
     window_from = now + timedelta(minutes=7)
     window_to = now + timedelta(minutes=15)
+    followup_from = now + timedelta(minutes=int(os.getenv("DL_ATTENDANCE_FOLLOWUP_MIN", "60") or "60"))
+    followup_to = now + timedelta(minutes=int(os.getenv("DL_ATTENDANCE_FOLLOWUP_MAX", "180") or "180"))
 
     bookings = session.exec(
         select(Booking)
         .where(Booking.status == "confirmed")
-        .where(Booking.reminder_sent == False)  # noqa
     ).all()
 
-    sent = 0
+    sent_basic = 0
+    sent_followups = 0
     for b in bookings:
         slot = _slot_for_booking(b, session)
         if not slot:
@@ -2375,7 +2381,8 @@ def cron_send_reminders(
         s = _as_utc(slot.starts_at)
         if not s:
             continue
-        if window_from <= s <= window_to:
+
+        if not bool(getattr(b, "reminder_sent", False)) and window_from <= s <= window_to:
             mins = int((s - now).total_seconds() // 60)
             risk = _booking_risk_info(b, session)
             extra = f"До начала ~{mins} мин"
@@ -2386,10 +2393,57 @@ def cron_send_reminders(
             b.reminder_sent = True
             b.reminder_sent_at = now
             session.add(b)
-            sent += 1
+            sent_basic += 1
+
+        if followup_from <= s <= followup_to:
+            mins_left = max(1, int((s - now).total_seconds() // 60))
+            pending_targets: List[Tuple[str, User]] = []
+            if str(getattr(b, "student_attendance_status", "pending") or "pending") == "pending":
+                student = session.get(User, b.student_user_id)
+                if student:
+                    pending_targets.append(("student", student))
+            if str(getattr(b, "tutor_attendance_status", "pending") or "pending") == "pending":
+                tutor = session.get(User, b.tutor_user_id)
+                if tutor:
+                    pending_targets.append(("tutor", tutor))
+
+            tutor = session.get(User, b.tutor_user_id)
+            student = session.get(User, b.student_user_id)
+            for participant, recipient in pending_targets:
+                notif_kind = f"attendance_followup_{participant}_slot_{b.slot_id}"
+                rk = _notif_key_for_user(recipient, fallback=f"booking:{b.id}:{participant}")
+                if _notification_exists(session, rk, "booking", b.id, notif_kind):
+                    continue
+
+                if participant == "student":
+                    counterpart_name = str(getattr(tutor, "email", "") or f"репетитор #{b.tutor_user_id}")
+                    audience_label = "ученика"
+                else:
+                    counterpart_name = str(getattr(student, "email", "") or f"ученик #{b.student_user_id}")
+                    audience_label = "репетитора"
+
+                subject = "DL: подтвердите участие в занятии"
+                body = (
+                    f"Напоминание для {audience_label}: занятие booking-{b.id} начнётся примерно через {mins_left} мин.\n"
+                    f"Время: {s.isoformat()}\n"
+                    f"Вторая сторона: {counterpart_name}\n"
+                    "Статус подтверждения пока не получен. Пожалуйста, подтвердите участие в личном кабинете."
+                )
+                try:
+                    _notify_user_direct(recipient, subject, body)
+                    _notification_mark(session, rk, "booking", b.id, notif_kind, note=f"mins_left={mins_left}")
+                    sent_followups += 1
+                except Exception:
+                    pass
 
     session.commit()
-    return {"ok": True, "sent": sent, "now": now.isoformat()}
+    return {
+        "ok": True,
+        "sent": sent_basic + sent_followups,
+        "sent_basic": sent_basic,
+        "sent_followups": sent_followups,
+        "now": now.isoformat(),
+    }
 
 
 # -----------------

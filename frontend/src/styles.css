@@ -536,3 +536,19 @@ a{color:inherit; text-decoration:none}
   gap:10px;
   flex-wrap:wrap;
 }
+
+
+.bookingCardPending{
+  border-color: rgba(255,106,0,.45);
+  box-shadow: 0 12px 32px rgba(255,106,0,.10);
+}
+.pillWarning{
+  border-color: rgba(255,106,0,.28);
+  background: rgba(255,106,0,.10);
+  color: #b45309;
+}
+.pillSoft{
+  border-color: rgba(251,191,36,.35);
+  background: rgba(251,191,36,.10);
+  color: #92400e;
+}

@@ -62,6 +62,18 @@ function riskLabel(v) {
   return 'Низкий риск'
 }
 
+function bookingNeedsMyConfirmation(booking, role) {
+  if (role === 'student') return String(booking?.student_attendance_status || 'pending') === 'pending'
+  if (role === 'tutor') return String(booking?.tutor_attendance_status || 'pending') === 'pending'
+  return false
+}
+
+function bookingWaitingOtherSide(booking, role) {
+  if (role === 'student') return String(booking?.tutor_attendance_status || 'pending') === 'pending'
+  if (role === 'tutor') return String(booking?.student_attendance_status || 'pending') === 'pending'
+  return false
+}
+
 function bookingToCalendarEvent(b, meRole) {
   const startsIso = b?.slot_starts_at
   const endsIso = b?.slot_ends_at
@@ -1042,9 +1054,11 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
               const isCancelled = String(b.status) === 'cancelled'
               const starts = b.slot_starts_at ? new Date(b.slot_starts_at).toLocaleString() : null
               const ends = b.slot_ends_at ? new Date(b.slot_ends_at).toLocaleString() : null
+              const needMyConfirmation = !isCancelled && !isDone && bookingNeedsMyConfirmation(b, me.role)
+              const waitingOtherConfirmation = !isCancelled && !isDone && bookingWaitingOtherSide(b, me.role)
 
               return (
-                <div key={b.id} className="card">
+                <div key={b.id} className={`card bookingCard${needMyConfirmation ? ' bookingCardPending' : ''}`}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
                       <div style={{ fontWeight: 800 }}>Бронь #{b.id} • {b.status}{bookingMetaMap?.[b.id]?.booking_type === 'trial' ? ' • пробный урок' : ''}</div>
@@ -1053,6 +1067,12 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
                       <div className="small">Создано: {new Date(b.created_at).toLocaleString()}</div>
                       <div className="small">Стоимость: {b.price || 0} ₽ • оплата: {b.payment_status || 'unpaid'}</div>
                       <div className="small">Подтверждение: ученик — {attendanceStatusLabel(b.student_attendance_status)} • репетитор — {attendanceStatusLabel(b.tutor_attendance_status)}</div>
+                      {(needMyConfirmation || waitingOtherConfirmation) && (
+                        <div className="pills" style={{ marginTop: 8 }}>
+                          {needMyConfirmation && <span className="pill pillWarning">Нужно ваше подтверждение</span>}
+                          {waitingOtherConfirmation && <span className="pill pillSoft">Ждём вторую сторону</span>}
+                        </div>
+                      )}
                       {Number(b.reschedule_count || 0) > 0 && <div className="small">Переносов: {b.reschedule_count}{b.last_reschedule_reason ? ` • ${b.last_reschedule_reason}` : ''}</div>}
                       {!!b.risk_status && b.risk_status !== 'low' && (
                         <div className="footerNote" style={{ marginTop: 6 }}>
