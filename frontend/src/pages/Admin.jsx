@@ -134,13 +134,22 @@ export default function Admin() {
     return false
   }
 
-  function goToTelegram(linkObj) {
+  async function goToTelegram(linkObj) {
     const webUrl = telegramConnectUrl(linkObj)
+    const appUrl = telegramAppUrl(linkObj)
     if (!webUrl) {
       setErr('Не удалось собрать Telegram-ссылку. Нажми «Новая ссылка».')
       return false
     }
     setErr('')
+    await copyTelegramStart(linkObj)
+    if (appUrl) {
+      window.location.assign(appUrl)
+      window.setTimeout(() => {
+        window.location.assign(webUrl)
+      }, 700)
+      return true
+    }
     window.location.assign(webUrl)
     return true
   }
@@ -422,6 +431,7 @@ export default function Admin() {
               </div>
               <div className="footerNote" style={{ marginTop: 8 }}>Роль определяется автоматически: <b>админ</b>. Доступны /whoami, /today, /next, /schedule и /stats.</div>
               <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(telegramLink)}</div>
+              <div className="footerNote" style={{ marginTop: 8 }}>Если Telegram не привяжется автоматически после перехода, просто нажми «Скопировать команду» и вставь её в чат бота.</div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving || !telegramConnectUrl(telegramLink)}>Подключить Telegram</button>
@@ -431,12 +441,12 @@ export default function Admin() {
           </div>
           {telegramLink?.token ? (
             <div style={{ marginTop: 12 }}>
-              <div className="label">Резервный код подключения</div>
+              <div className="label">Готовая команда для Telegram</div>
               <input className="input" value={telegramStartCommand(telegramLink)} readOnly />
               <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-                <button className="btn" type="button" onClick={() => copyTelegramStart(telegramLink)}>Скопировать /start-команду</button>
+                <button className="btn" type="button" onClick={() => copyTelegramStart(telegramLink)}>Скопировать команду</button>
               </div>
-              <div className="footerNote">Важно: в Telegram нужна полная команда с кодом. Просто /start без токена не подключит аккаунт.</div>
+              <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без токена не подключит аккаунт.</div>
             </div>
           ) : null}
         </div>

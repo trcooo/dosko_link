@@ -626,13 +626,22 @@ export default function Dashboard() {
     return false
   }
 
-  function goToTelegram(linkObj) {
+  async function goToTelegram(linkObj) {
     const webUrl = telegramConnectUrl(linkObj)
+    const appUrl = telegramAppUrl(linkObj)
     if (!webUrl) {
       setErr('Не удалось собрать ссылку Telegram. Нажми «Новая ссылка» или проверь токен бота.')
       return false
     }
     setErr('')
+    await copyTelegramStart(linkObj)
+    if (appUrl) {
+      window.location.assign(appUrl)
+      window.setTimeout(() => {
+        window.location.assign(webUrl)
+      }, 700)
+      return true
+    }
     window.location.assign(webUrl)
     return true
   }
@@ -1025,6 +1034,7 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
               Быстрые команды: {telegramSuggestedCommands(tgLink?.role || me?.role).join(' · ')}
             </div>
             <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(tgLink)}</div>
+            <div className="footerNote" style={{ marginTop: 8 }}>Если Telegram не привяжется автоматически после перехода, просто нажми «Скопировать команду» и вставь её в чат бота.</div>
             <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
               <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving || !telegramConnectUrl(tgLink)}>Подключить Telegram</button>
               <button className="btn" onClick={refreshTelegramLink} disabled={saving}>Новая ссылка</button>
@@ -1032,12 +1042,12 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             </div>
             {tgLink?.token ? (
               <>
-                <div className="label">Резервный код подключения</div>
+                <div className="label">Готовая команда для Telegram</div>
                 <input className="input" value={telegramStartCommand(tgLink)} readOnly />
                 <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-                  <button className="btn" type="button" onClick={() => copyTelegramStart(tgLink)}>Скопировать /start-команду</button>
+                  <button className="btn" type="button" onClick={() => copyTelegramStart(tgLink)}>Скопировать команду</button>
                 </div>
-                <div className="footerNote">Важно: в Telegram нужна полная команда с кодом. Просто /start без токена не подключит аккаунт.</div>
+                <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без токена не подключит аккаунт.</div>
               </>
             ) : null}
           </div>
