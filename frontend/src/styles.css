@@ -552,3 +552,126 @@ a{color:inherit; text-decoration:none}
   background: rgba(251,191,36,.10);
   color: #92400e;
 }
+
+
+#app{min-height:100%}
+body{overflow-x:hidden}
+.container{width:min(1120px, 100%); padding:20px clamp(14px, 2vw, 24px) 28px}
+.card{overflow:hidden}
+
+.navToggle{
+  display:none;
+  width:44px;
+  height:44px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.92);
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  flex-direction:column;
+  cursor:pointer;
+}
+.navToggle span{
+  display:block;
+  width:18px;
+  height:2px;
+  border-radius:999px;
+  background:var(--text);
+}
+.navIdentity{max-width:min(100%, 260px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.chatComposer{display:flex; gap:8px; margin-top:10px}
+.calendarScroll{overflow-x:auto; padding-bottom:6px}
+.calendarScroll .lessonCalendarGrid{min-width:640px}
+.lessonMore{font-size:11px; color:var(--muted); text-align:center; padding:4px}
+.canvasWrap{--board-height:520px}
+.canvasArea,.canvas,.responsiveCanvas{height:var(--board-height)}
+.modalCard{max-height:min(88vh, 960px); overflow:auto}
+
+@media (max-width: 860px){
+  .navInner{position:relative; align-items:center}
+  .navToggle{display:inline-flex}
+  .navLinks{
+    display:none;
+    position:absolute;
+    top:calc(100% + 10px);
+    left:14px;
+    right:14px;
+    padding:12px;
+    border-radius:20px;
+    border:1px solid rgba(229,231,235,.95);
+    background:rgba(255,255,255,.98);
+    box-shadow:0 22px 60px rgba(17,24,39,.14);
+    backdrop-filter:blur(16px);
+    flex-direction:column;
+    align-items:stretch;
+    z-index:40;
+  }
+  .navLinks.open{display:flex}
+  .navLinks .btn{width:100%; justify-content:flex-start}
+  .navLinks .small{padding:4px 2px}
+}
+
+@media (max-width: 720px){
+  .container{padding:14px 12px 24px}
+  .navInner{padding:12px}
+  .brandLogo{width:132px}
+  .card{padding:14px}
+  .heroInner{padding:18px}
+  .heroTitle,.h1{font-size:26px; line-height:1.08}
+  .heroSub,.sub{font-size:14px}
+  .h2{font-size:20px}
+  .h3{font-size:17px}
+  .btn{min-height:42px}
+  .panelTitle{align-items:flex-start; gap:8px; flex-wrap:wrap}
+  .chatComposer{flex-direction:column}
+  .chatComposer .btn{width:100%}
+  .canvasTools{overflow-x:auto; padding-bottom:8px}
+  .canvasTools .btn{white-space:nowrap}
+  .room{gap:10px}
+  .videoBox{aspect-ratio:16/11}
+  .profilePhoto{width:88px; height:88px; border-radius:20px}
+  .badge{width:34px; height:34px; border-radius:12px}
+}
+
+@media (max-width: 640px){
+  .heroGrid,.grid3{grid-template-columns:1fr}
+  .pills{gap:8px}
+  .pills .btn{width:100%; justify-content:flex-start}
+  .mockHeader{flex-direction:column; align-items:flex-start}
+  .lessonCalendarGrid{gap:5px}
+  .lessonCalendarCell{min-height:78px}
+  .modalOverlay{padding:12px}
+  .modalCard{padding:14px; border-radius:18px}
+  .card > div[style*="display: flex"],
+  .row,
+  .panelTitle,
+  .calendarToolbar,
+  .mockBoardTop,
+  .heroCtas,
+  .kpiRow{align-items:stretch}
+  .row > div[style*="width"],
+  .row > div[style*="minWidth"],
+  .row > div,
+  div[style*="display: flex"] > div[style*="width"],
+  div[style*="display: flex"] > div[style*="minWidth"],
+  .grid > div[style*="width"],
+  .grid > div[style*="minWidth"]{
+    width:100% !important;
+    min-width:0 !important;
+    flex:1 1 100% !important;
+    margin-left:0 !important;
+  }
+  input[style*="minWidth"],
+  input[style*="width"],
+  select[style*="width"]{width:100% !important}
+}
+
+@media (max-width: 480px){
+  .brandLogo{width:120px}
+  .heroTitle,.h1{font-size:24px}
+  .small{font-size:12px}
+  .kpi{width:100%}
+  .profilePhoto{width:74px; height:74px; border-radius:18px}
+  .calendarScroll .lessonCalendarGrid{min-width:560px}
+}

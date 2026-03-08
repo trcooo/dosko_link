@@ -76,7 +76,7 @@ export default function Chat({ roomId, token, me }) {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+      <div className="chatComposer">
         <input className="input" value={text} onChange={(e) => setText(e.target.value)} placeholder="Написать…" onKeyDown={(e) => { if (e.key === 'Enter') send() }} />
         <button className="btn btnPrimary" onClick={send}>Отправить</button>
       </div>

@@ -66,12 +66,21 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
 
   const [pendingImg, setPendingImg] = useState(null) // {dataUrl, aspect}
   const [pendingMode, setPendingMode] = useState('place') // place | background
+  const [boardHeight, setBoardHeight] = useState(520)
 
   const historyRef = useRef([]) // history for redraw/export
   const drawing = useRef(false)
   const last = useRef({ x: 0, y: 0 })
 
   const imgCacheRef = useRef(new Map()) // dataUrl -> HTMLImageElement
+
+  function getBoardHeight(rectWidth = wrapRef.current?.getBoundingClientRect().width || 0) {
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
+    if (vw <= 480) return Math.max(300, Math.min(360, Math.round(rectWidth * 0.88) || 320))
+    if (vw <= 720) return Math.max(320, Math.min(400, Math.round(rectWidth * 0.82) || 340))
+    if (vw <= 980) return 420
+    return 520
+  }
 
   function resizeCanvas() {
     const canvas = canvasRef.current
@@ -82,18 +91,21 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     const dpr = window.devicePixelRatio || 1
 
     canvas.width = Math.floor(rect.width * dpr)
-    canvas.height = Math.floor(520 * dpr)
+    const nextHeight = getBoardHeight(rect.width)
+    setBoardHeight(prev => prev === nextHeight ? prev : nextHeight)
+
+    canvas.height = Math.floor(nextHeight * dpr)
     canvas.style.width = `${rect.width}px`
-    canvas.style.height = '520px'
+    canvas.style.height = `${nextHeight}px`
 
     const ctx = canvas.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     // Redraw from history
-    ctx.clearRect(0, 0, rect.width, 520)
+    ctx.clearRect(0, 0, rect.width, nextHeight)
     for (const seg of historyRef.current) {
       if (seg.type === 'clear') {
-        ctx.clearRect(0, 0, rect.width, 520)
+        ctx.clearRect(0, 0, rect.width, nextHeight)
         continue
       }
       if (seg.type === 'draw') drawLine(seg)
@@ -113,7 +125,8 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     if (!wrap) return { x: 0, y: 0, rect: { width: 1 } }
     const rect = wrap.getBoundingClientRect()
     const x = (e.clientX - rect.left) / rect.width
-    const y = (e.clientY - rect.top) / 520
+    const height = boardHeight || getBoardHeight(rect.width)
+    const y = (e.clientY - rect.top) / height
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)), rect }
   }
 
@@ -124,9 +137,10 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
 
     const rect = wrap.getBoundingClientRect()
     const px0 = x0 * rect.width
-    const py0 = y0 * 520
+    const height = boardHeight || getBoardHeight(rect.width)
+    const py0 = y0 * height
     const px1 = x1 * rect.width
-    const py1 = y1 * 520
+    const py1 = y1 * height
 
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
@@ -146,7 +160,8 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
 
     const rect = wrap.getBoundingClientRect()
     const px = x * rect.width
-    const py = y * 520
+    const height = boardHeight || getBoardHeight(rect.width)
+    const py = y * height
 
     ctx.fillStyle = color
     ctx.font = `${size}px system-ui, -apple-system, Segoe UI, Roboto, Arial`
@@ -170,9 +185,10 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     const rect = wrap.getBoundingClientRect()
 
     const px = x * rect.width
-    const py = y * 520
+    const height = boardHeight || getBoardHeight(rect.width)
+    const py = y * height
     const pw = w * rect.width
-    const ph = h * 520
+    const ph = h * height
 
     const im = _getImg(dataUrl)
     if (im.complete && im.naturalWidth) {
@@ -189,7 +205,8 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     const wrap = wrapRef.current
     if (!ctx || !wrap) return
     const rect = wrap.getBoundingClientRect()
-    ctx.clearRect(0, 0, rect.width, 520)
+    const height = boardHeight || getBoardHeight(rect.width)
+    ctx.clearRect(0, 0, rect.width, height)
     if (resetHistory) historyRef.current = []
   }
 
@@ -263,7 +280,8 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
         send(msg)
       } else {
         let wNorm = 0.42
-        let hNorm = (wNorm * rect.width) / (pendingImg.aspect || 1) / 520
+        const height = boardHeight || getBoardHeight(rect.width)
+        let hNorm = (wNorm * rect.width) / (pendingImg.aspect || 1) / height
         // Clamp if too tall
         if (hNorm > 0.8) {
           const scale = 0.8 / hNorm
@@ -314,7 +332,7 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     const onResize = () => resizeCanvas()
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [])
+  }, [boardHeight])
 
   useEffect(() => {
     const ws = new WebSocket(wsUrl)
@@ -369,8 +387,8 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
         <input ref={fileRef} style={{ display: 'none' }} type="file" accept="image/*" onChange={onImageSelected} />
       </div>
 
-      <div ref={wrapRef} className="canvasArea" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
-        <canvas ref={canvasRef} className="canvas" />
+      <div ref={wrapRef} className="canvasArea" style={{ '--board-height': `${boardHeight}px` }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
+        <canvas ref={canvasRef} className="canvas responsiveCanvas" />
       </div>
     </div>
   )
