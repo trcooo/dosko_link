@@ -35,6 +35,27 @@ function boolMark(v) {
   return v ? '✓' : '—'
 }
 
+const TELEGRAM_BOT_FALLBACK = 'doskolink_bot'
+
+function telegramBotUsername(link) {
+  return String(link?.bot_username || TELEGRAM_BOT_FALLBACK || '').trim().replace(/^@+/, '')
+}
+
+function telegramConnectUrl(link) {
+  const direct = String(link?.deep_link_url || '').trim()
+  if (direct) return direct
+  const token = String(link?.token || '').trim()
+  const username = telegramBotUsername(link)
+  if (username && token) return `https://t.me/${username}?start=${encodeURIComponent(token)}`
+  if (username) return `https://t.me/${username}`
+  return ''
+}
+
+function formatDateTimeShort(v) {
+  if (!v) return '—'
+  try { return new Date(v).toLocaleString() } catch { return String(v) }
+}
+
 export default function Admin() {
   const { me, token, loading } = useAuth()
   const nav = useNavigate()
@@ -51,6 +72,8 @@ export default function Admin() {
   const [reviews, setReviews] = useState([])
   const [reports, setReports] = useState([])
   const [catalog, setCatalog] = useState([])
+  const [telegramSettings, setTelegramSettings] = useState(null)
+  const [telegramLink, setTelegramLink] = useState(null)
 
   const [tutorStatusFilter, setTutorStatusFilter] = useState('pending')
   const [bookingStatus, setBookingStatus] = useState('')
@@ -67,6 +90,61 @@ export default function Admin() {
   }, [loading, me, nav])
 
   const canLoad = useMemo(() => Boolean(token && me?.role === 'admin'), [token, me])
+
+  async function loadTelegramPanel() {
+    if (!canLoad) return
+    try {
+      const [settingsRes, linkRes] = await Promise.all([
+        apiFetch('/api/me/settings', { token }),
+        apiFetch('/api/me/telegram-link', { token }),
+      ])
+      setTelegramSettings(settingsRes || null)
+      setTelegramLink(linkRes || null)
+    } catch (e) {
+      setErr(e.message || 'Не удалось загрузить Telegram-настройки')
+    }
+  }
+
+  function openTelegramConnect() {
+    const url = telegramConnectUrl(telegramLink)
+    if (!url) {
+      setErr('Не удалось собрать Telegram-ссылку. Нажми «Новая ссылка».')
+      return
+    }
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  async function refreshTelegramConnect() {
+    if (!canLoad) return
+    setSaving(true)
+    setErr('')
+    try {
+      const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
+      setTelegramLink(data || null)
+      const url = telegramConnectUrl(data)
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    } catch (e) {
+      setErr(e.message || 'Не удалось обновить Telegram-ссылку')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function unlinkTelegramConnect() {
+    if (!canLoad) return
+    setSaving(true)
+    setErr('')
+    try {
+      const st = await apiFetch('/api/me/telegram-unlink', { method: 'POST', token })
+      setTelegramSettings(prev => ({ ...(prev || {}), ...(st || {}) }))
+      const linkRes = await apiFetch('/api/me/telegram-link', { token })
+      setTelegramLink(linkRes || null)
+    } catch (e) {
+      setErr(e.message || 'Не удалось отвязать Telegram')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function loadActive() {
     if (!canLoad) return
@@ -127,6 +205,7 @@ export default function Admin() {
   }
 
   useEffect(() => { loadActive() }, [tab, token, canLoad])
+  useEffect(() => { if (canLoad) loadTelegramPanel() }, [canLoad, token])
 
   async function refreshCurrent() {
     await loadActive()
@@ -296,6 +375,33 @@ export default function Admin() {
             </div>
           </div>
           {err && <div className="footerNote">{err}</div>}
+        </div>
+
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div>
+              <div style={{ fontWeight: 900, fontSize: 18 }}>Telegram для админа</div>
+              <div className="small" style={{ marginTop: 6 }}>
+                {telegramLink?.connected
+                  ? `Подключено: ${telegramSettings?.telegram_username ? '@' + telegramSettings.telegram_username : (telegramSettings?.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(telegramSettings?.telegram_linked_at)}`
+                  : 'Подключи Telegram прямо из админ-панели: кнопка откроет бота с готовой командой /start.'}
+              </div>
+              <div className="footerNote" style={{ marginTop: 8 }}>Роль определяется автоматически: <b>админ</b>. Доступны /whoami, /today, /next, /schedule и /stats.</div>
+              <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(telegramLink)}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving || !telegramConnectUrl(telegramLink)}>Подключить Telegram</button>
+              <button className="btn" onClick={refreshTelegramConnect} disabled={saving}>Новая ссылка</button>
+              <button className="btn" onClick={unlinkTelegramConnect} disabled={saving || !telegramLink?.connected}>Отвязать</button>
+            </div>
+          </div>
+          {telegramLink?.token ? (
+            <div style={{ marginTop: 12 }}>
+              <div className="label">Резервный код подключения</div>
+              <input className="input" value={telegramLink.token} readOnly />
+              <div className="footerNote">Если браузер не открыл Telegram, отправь боту вручную: /start {telegramLink.token}</div>
+            </div>
+          ) : null}
         </div>
 
         {tab === 'overview' && overview && (

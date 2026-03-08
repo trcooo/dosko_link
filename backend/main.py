@@ -8,6 +8,7 @@ import re
 import secrets
 import smtplib
 import ssl
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -239,8 +240,41 @@ def _send_email(to_email: str, subject: str, text_body: str) -> None:
         server.sendmail(cfg["from"], [to_email], msg.encode("utf-8"))
 
 
+
+_TELEGRAM_BOT_USERNAME_CACHE: Dict[str, Any] = {"token": "", "username": "", "checked_at": 0.0}
+
+
 def _telegram_bot_username() -> str:
-    return str(os.getenv("DL_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+    configured = str(os.getenv("DL_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+    if configured:
+        _TELEGRAM_BOT_USERNAME_CACHE.update({"token": "", "username": configured, "checked_at": time.time()})
+        return configured
+
+    token = str(os.getenv("DL_TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        return ""
+
+    now = time.time()
+    cached_token = str(_TELEGRAM_BOT_USERNAME_CACHE.get("token") or "")
+    cached_name = str(_TELEGRAM_BOT_USERNAME_CACHE.get("username") or "")
+    checked_at = float(_TELEGRAM_BOT_USERNAME_CACHE.get("checked_at") or 0.0)
+    if cached_token == token and cached_name and (now - checked_at) < 3600:
+        return cached_name
+
+    try:
+        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+        username = str((((data or {}).get("result") or {}).get("username")) or "").strip().lstrip("@")
+        if username:
+            _TELEGRAM_BOT_USERNAME_CACHE.update({"token": token, "username": username, "checked_at": now})
+            return username
+    except Exception as e:
+        print(f"[telegram/getMe/error] {e}")
+
+    if cached_token == token and cached_name:
+        return cached_name
+    return ""
 
 
 def _public_app_url() -> str:

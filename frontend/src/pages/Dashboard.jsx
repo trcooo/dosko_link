@@ -66,6 +66,22 @@ function telegramSuggestedCommands(role) {
   return ['/whoami', '/today', '/next', '/schedule']
 }
 
+const TELEGRAM_BOT_FALLBACK = 'doskolink_bot'
+
+function telegramBotUsername(link) {
+  return String(link?.bot_username || TELEGRAM_BOT_FALLBACK || '').trim().replace(/^@+/, '')
+}
+
+function telegramConnectUrl(link) {
+  const direct = String(link?.deep_link_url || '').trim()
+  if (direct) return direct
+  const token = String(link?.token || '').trim()
+  const username = telegramBotUsername(link)
+  if (username && token) return `https://t.me/${username}?start=${encodeURIComponent(token)}`
+  if (username) return `https://t.me/${username}`
+  return ''
+}
+
 function attendanceStatusLabel(v) {
   const s = String(v || 'pending')
   if (s === 'confirmed') return 'подтверждено'
@@ -587,7 +603,8 @@ export default function Dashboard() {
     try {
       const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
       setTgLink(data || null)
-      if (data?.deep_link_url) window.open(data.deep_link_url, '_blank', 'noopener,noreferrer')
+      const url = telegramConnectUrl(data)
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
     } catch (e) {
       setErr(e.message || 'Не удалось обновить ссылку Telegram')
     } finally {
@@ -596,7 +613,12 @@ export default function Dashboard() {
   }
 
   function openTelegramLink() {
-    if (tgLink?.deep_link_url) window.open(tgLink.deep_link_url, '_blank', 'noopener,noreferrer')
+    const url = telegramConnectUrl(tgLink)
+    if (!url) {
+      setErr('Не удалось собрать ссылку Telegram. Нажми «Новая ссылка» или проверь токен бота.')
+      return
+    }
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   async function unlinkTelegram() {
@@ -968,13 +990,9 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             <div className="footerNote" style={{ marginTop: 8 }}>
               Быстрые команды: {telegramSuggestedCommands(tgLink?.role || me?.role).join(' · ')}
             </div>
-            {tgLink?.bot_username ? (
-              <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{tgLink.bot_username}</div>
-            ) : (
-              <div className="footerNote" style={{ marginTop: 8 }}>Сначала укажи DL_TELEGRAM_BOT_USERNAME в Railway, чтобы кнопка подключения работала автоматически.</div>
-            )}
+            <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(tgLink)}</div>
             <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
-              <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving || !tgLink?.deep_link_url}>Подключить Telegram</button>
+              <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving || !telegramConnectUrl(tgLink)}>Подключить Telegram</button>
               <button className="btn" onClick={refreshTelegramLink} disabled={saving}>Новая ссылка</button>
               <button className="btn" onClick={unlinkTelegram} disabled={saving || !tgLink?.connected}>Отвязать</button>
             </div>
