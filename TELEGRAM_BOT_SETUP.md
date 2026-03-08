@@ -3,7 +3,7 @@
 ## What is already implemented
 
 - Secure account linking from the dashboard via one-time deep link token.
-- Role-aware bot behavior: student and tutor are identified from the linked DoskoLink account.
+- Role-aware bot behavior: student, tutor, and admin are identified automatically from the linked DoskoLink account.
 - Telegram webhook endpoint: `/api/integrations/telegram/webhook`.
 - Commands:
   - `/start`
@@ -43,10 +43,12 @@ Recommended command list:
 ```text
 start - подключить аккаунт DoskoLink
 help - список команд
+whoami - показать подключённый аккаунт и роль
 next - ближайшее занятие
 today - занятия на сегодня
 tomorrow - занятия на завтра
 schedule - ближайшие 5 занятий
+stats - сводка платформы для админа
 link - открыть личный кабинет
 unlink - отвязать Telegram
 ```
@@ -78,7 +80,7 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 3. Backend generates one-time token and deep link.
 4. Telegram opens the bot with `/start <token>`.
 5. Backend verifies token, links `telegram_chat_id` to the DoskoLink user and enables Telegram notifications.
-6. User role is taken from the DoskoLink account, so the bot knows whether it should show tutor or student data.
+6. User role is taken from the DoskoLink account, so the bot automatically switches between student, tutor, and admin behavior.
 
 ## Current product rules
 

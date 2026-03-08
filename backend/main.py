@@ -701,6 +701,25 @@ class TelegramLinkOut(BaseModel):
     linked_at: Optional[datetime] = None
 
 
+def _telegram_role_key(role_or_user: Any) -> str:
+    if isinstance(role_or_user, User):
+        role = str(getattr(role_or_user, 'role', 'student') or 'student').strip().lower()
+    else:
+        role = str(role_or_user or 'student').strip().lower()
+    if role not in {'student', 'tutor', 'admin'}:
+        return 'student'
+    return role
+
+
+def _telegram_role_label(role_or_user: Any) -> str:
+    role = _telegram_role_key(role_or_user)
+    if role == 'tutor':
+        return 'репетитор'
+    if role == 'admin':
+        return 'админ'
+    return 'ученик'
+
+
 def _telegram_status_label(v: str) -> str:
     s = str(v or 'pending').strip().lower()
     if s == 'confirmed':
@@ -713,7 +732,7 @@ def _telegram_status_label(v: str) -> str:
 def _user_label_for_telegram(u: Optional[User], session: Session) -> str:
     if not u:
         return 'Пользователь'
-    if str(getattr(u, 'role', '')) == 'tutor':
+    if _telegram_role_key(u) == 'tutor':
         prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == u.id)).first()
         if prof and str(getattr(prof, 'display_name', '') or '').strip():
             return str(prof.display_name).strip()
@@ -735,11 +754,13 @@ def _room_url_for_booking(booking_id: int) -> str:
     return f"{app_url}/room/booking-{int(booking_id)}"
 
 
-def _dashboard_url() -> str:
+def _dashboard_url(user: Optional[User] = None) -> str:
     app_url = _public_app_url()
     if not app_url:
         return ''
-    return f"{app_url}/dashboard"
+    role = _telegram_role_key(user) if user is not None else 'student'
+    path = '/admin' if role == 'admin' else '/dashboard'
+    return f"{app_url}{path}"
 
 
 def _telegram_link_token_ttl_minutes() -> int:
@@ -810,10 +831,11 @@ def _telegram_upcoming_bookings_for_user(
     limit: int = 5,
 ) -> List[Tuple[Booking, Slot, datetime]]:
     stmt = select(Booking).where(Booking.status == 'confirmed')
-    if str(getattr(user, 'role', 'student')) == 'tutor':
-        stmt = stmt.where(Booking.tutor_user_id == int(user.id))
-    else:
-        stmt = stmt.where(Booking.student_user_id == int(user.id))
+    role = _telegram_role_key(user)
+    if role == 'tutor':
+        stmt = stmt.where(Booking.tutor_user_id == int(user.id or 0))
+    elif role == 'student':
+        stmt = stmt.where(Booking.student_user_id == int(user.id or 0))
     rows = session.exec(stmt).all()
     items: List[Tuple[Booking, Slot, datetime]] = []
     now = _utcnow()
@@ -835,8 +857,15 @@ def _telegram_upcoming_bookings_for_user(
     return items[:max(1, int(limit))]
 
 
+def _telegram_participants_label(booking: Booking, session: Session) -> Tuple[str, str]:
+    tutor = session.get(User, booking.tutor_user_id)
+    student = session.get(User, booking.student_user_id)
+    return _user_label_for_telegram(tutor, session), _user_label_for_telegram(student, session)
+
+
 def _telegram_counterpart_label(viewer: User, booking: Booking, session: Session) -> str:
-    if str(getattr(viewer, 'role', 'student')) == 'tutor':
+    role = _telegram_role_key(viewer)
+    if role == 'tutor':
         other = session.get(User, booking.student_user_id)
         return _user_label_for_telegram(other, session)
     other = session.get(User, booking.tutor_user_id)
@@ -849,8 +878,14 @@ def _telegram_booking_summary_line(viewer: User, booking: Booking, slot: Slot, s
     when = start_at.strftime('%d.%m %H:%M') if isinstance(start_at, datetime) else str(getattr(slot, 'starts_at', ''))
     if isinstance(end_at, datetime):
         when += f"–{end_at.strftime('%H:%M')}"
+    role = _telegram_role_key(viewer)
+    if role == 'admin':
+        tutor_name, student_name = _telegram_participants_label(booking, session)
+        tutor_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+        student_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+        return f"• #{booking.id} · {when} · репетитор: {tutor_name} · ученик: {student_name} · статусы: уч={student_status}, реп={tutor_status}"
     counterpart = _telegram_counterpart_label(viewer, booking, session)
-    if str(getattr(viewer, 'role', 'student')) == 'tutor':
+    if role == 'tutor':
         my_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
         other_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
         counterpart_label = 'ученик'
@@ -872,34 +907,47 @@ def _telegram_booking_card_text(viewer: User, booking: Booking, slot: Slot, sess
     if isinstance(start_at, datetime) and isinstance(end_at, datetime):
         mins = max(1, int((end_at - start_at).total_seconds() // 60))
         duration = f"\nДлительность: {mins} мин"
-    counterpart = _telegram_counterpart_label(viewer, booking, session)
     room_url = _room_url_for_booking(booking.id)
-    if str(getattr(viewer, 'role', 'student')) == 'tutor':
-        my_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
-        other_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
-        counterpart_label = 'Ученик'
+    role = _telegram_role_key(viewer)
+    if role == 'admin':
+        tutor_name, student_name = _telegram_participants_label(booking, session)
+        tutor_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+        student_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+        text = (
+            f"Ближайшее занятие платформы #{booking.id}\n"
+            f"Когда: {when}{duration}\n"
+            f"Репетитор: {tutor_name}\n"
+            f"Ученик: {student_name}\n"
+            f"Статусы: ученик — {student_status}, репетитор — {tutor_status}"
+        )
     else:
-        my_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
-        other_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
-        counterpart_label = 'Репетитор'
-    text = (
-        f"Ближайшее занятие #{booking.id}\n"
-        f"Когда: {when}{duration}\n"
-        f"{counterpart_label}: {counterpart}\n"
-        f"Ваш статус: {my_status}\n"
-        f"Вторая сторона: {other_status}"
-    )
+        counterpart = _telegram_counterpart_label(viewer, booking, session)
+        if role == 'tutor':
+            my_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+            other_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+            counterpart_label = 'Ученик'
+        else:
+            my_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+            other_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+            counterpart_label = 'Репетитор'
+        text = (
+            f"Ближайшее занятие #{booking.id}\n"
+            f"Когда: {when}{duration}\n"
+            f"{counterpart_label}: {counterpart}\n"
+            f"Ваш статус: {my_status}\n"
+            f"Вторая сторона: {other_status}"
+        )
     if room_url:
         text += f"\nКомната: {room_url}"
     return text
 
 
-def _telegram_main_keyboard_for_booking(booking_id: int) -> Optional[Dict[str, Any]]:
+def _telegram_main_keyboard_for_booking(booking_id: int, viewer: Optional[User] = None) -> Optional[Dict[str, Any]]:
     buttons: List[List[Dict[str, str]]] = []
     room_url = _room_url_for_booking(booking_id)
     if room_url:
         buttons.append([{'text': 'Открыть занятие', 'url': room_url}])
-    dash = _dashboard_url()
+    dash = _dashboard_url(viewer)
     if dash:
         buttons.append([{'text': 'Личный кабинет DoskoLink', 'url': dash}])
     if not buttons:
@@ -908,28 +956,99 @@ def _telegram_main_keyboard_for_booking(booking_id: int) -> Optional[Dict[str, A
 
 
 def _telegram_help_text(role: str) -> str:
-    base = [
-        'Команды DoskoLink в Telegram:',
-        '/today — занятия на сегодня',
-        '/tomorrow — занятия на завтра',
-        '/next — ближайшее занятие',
-        '/schedule — ближайшие 5 занятий',
-        '/link — открыть кабинет DoskoLink',
-        '/unlink — отвязать Telegram от аккаунта',
-    ]
-    if role == 'tutor':
-        base.append('Роль определена как репетитор — бот покажет ваших учеников и уроки.')
+    role = _telegram_role_key(role)
+    base = ['Команды DoskoLink в Telegram:', '/whoami — проверить, какой аккаунт и какая роль сейчас подключены']
+    if role == 'admin':
+        base.extend([
+            '/today — уроки платформы на сегодня',
+            '/tomorrow — уроки платформы на завтра',
+            '/next — ближайший урок на платформе',
+            '/schedule — ближайшие 5 уроков платформы',
+            '/stats — сводка по ученикам, репетиторам и Telegram-подключениям',
+            '/link — открыть кабинет DoskoLink',
+            '/unlink — отвязать Telegram от аккаунта',
+            'Роль определена автоматически как админ — бот показывает сводку по платформе и ближайшие занятия всех участников.',
+        ])
+    elif role == 'tutor':
+        base.extend([
+            '/today — ваши занятия на сегодня',
+            '/tomorrow — ваши занятия на завтра',
+            '/next — ближайшее занятие',
+            '/schedule — ближайшие 5 занятий',
+            '/link — открыть кабинет DoskoLink',
+            '/unlink — отвязать Telegram от аккаунта',
+            'Роль определена автоматически как репетитор — бот покажет ваших учеников и уроки.',
+        ])
     else:
-        base.append('Роль определена как ученик — бот покажет ваши занятия и репетиторов.')
+        base.extend([
+            '/today — ваши занятия на сегодня',
+            '/tomorrow — ваши занятия на завтра',
+            '/next — ближайшее занятие',
+            '/schedule — ближайшие 5 занятий',
+            '/link — открыть кабинет DoskoLink',
+            '/unlink — отвязать Telegram от аккаунта',
+            'Роль определена автоматически как ученик — бот покажет ваши занятия и репетиторов.',
+        ])
     return '\n'.join(base)
 
 
+def _telegram_whoami_text(user: User, session: Session) -> str:
+    role = _telegram_role_key(user)
+    role_label = _telegram_role_label(role)
+    base = [
+        'Подключение DoskoLink активно.',
+        f'Аккаунт: {getattr(user, "email", "—")}',
+        f'Роль: {role_label}',
+        f'Telegram: @{getattr(user, "telegram_username", "")}' if getattr(user, 'telegram_username', None) else f'Chat ID: {getattr(user, "telegram_chat_id", "—")}',
+    ]
+    if getattr(user, 'telegram_linked_at', None):
+        base.append(f'Связано: {user.telegram_linked_at.strftime("%d.%m.%Y %H:%M UTC")}')
+    if role == 'admin':
+        users = session.exec(select(User)).all()
+        linked = len([u for u in users if getattr(u, 'telegram_chat_id', None)])
+        base.append(f'Подключений Telegram на платформе: {linked}')
+    return '\n'.join(base)
+
+
+def _telegram_send_admin_stats(chat_id: str, session: Session) -> None:
+    users = session.exec(select(User)).all()
+    total = len(users)
+    tutors = len([u for u in users if _telegram_role_key(u) == 'tutor'])
+    students = len([u for u in users if _telegram_role_key(u) == 'student'])
+    admins = len([u for u in users if _telegram_role_key(u) == 'admin'])
+    linked = len([u for u in users if getattr(u, 'telegram_chat_id', None)])
+    admin_viewer = User(id=0, email='admin@local', password_hash='', role='admin')
+    now = _utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1) - timedelta(seconds=1)
+    today_items = _telegram_upcoming_bookings_for_user(admin_viewer, session, window_start=today_start, window_end=today_end, upcoming_only=False, limit=500)
+    upcoming_items = _telegram_upcoming_bookings_for_user(admin_viewer, session, upcoming_only=True, limit=500)
+    pending_attendance = 0
+    for booking, _, _ in upcoming_items:
+        if str(getattr(booking, 'student_attendance_status', 'pending')) == 'pending' or str(getattr(booking, 'tutor_attendance_status', 'pending')) == 'pending':
+            pending_attendance += 1
+    lines = [
+        'Сводка DoskoLink для админа:',
+        f'Пользователи: {total} (ученики: {students}, репетиторы: {tutors}, админы: {admins})',
+        f'Telegram подключён у: {linked}',
+        f'Уроков на сегодня: {len(today_items)}',
+        f'Ближайших активных уроков: {len(upcoming_items)}',
+        f'Уроков с неподтверждённым участием: {pending_attendance}',
+    ]
+    if upcoming_items:
+        booking, slot, _ = upcoming_items[0]
+        lines.append('')
+        lines.append(_telegram_booking_card_text(admin_viewer, booking, slot, session))
+    dash = _dashboard_url(admin_viewer)
+    _send_telegram(chat_id, '\n'.join(lines), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]} if dash else None)
+
+
 def _telegram_welcome_text(user: User) -> str:
-    role = 'репетитор' if str(getattr(user, 'role', 'student')) == 'tutor' else 'ученик'
+    role = _telegram_role_label(user)
     return (
         'Telegram подключён к DoskoLink.\n'
-        f'Роль: {role}.\n\n'
-        f'{_telegram_help_text(str(getattr(user, "role", "student") or "student"))}'
+        f'Роль определена автоматически: {role}.\n\n'
+        f'{_telegram_help_text(_telegram_role_key(user))}'
     )
 
 
@@ -995,7 +1114,7 @@ def _telegram_find_user_by_chat(session: Session, chat_id: str) -> Optional[User
 
 def _telegram_reply_not_linked(chat_id: str) -> None:
     txt = 'Этот Telegram ещё не подключён к DoskoLink. Откройте кабинет на сайте, нажмите «Подключить Telegram» и вернитесь в бот по deep link.'
-    dash = _dashboard_url()
+    dash = _public_app_url()
     kb = {'inline_keyboard': [[{'text': 'Открыть DoskoLink', 'url': dash}]]} if dash else None
     _send_telegram(chat_id, txt, reply_markup=kb)
 
@@ -1021,7 +1140,7 @@ def _telegram_send_next(chat_id: str, user: User, session: Session) -> None:
         _send_telegram(chat_id, 'Ближайших занятий пока нет.')
         return
     booking, slot, _ = items[0]
-    _send_telegram(chat_id, _telegram_booking_card_text(user, booking, slot, session), reply_markup=_telegram_main_keyboard_for_booking(booking.id))
+    _send_telegram(chat_id, _telegram_booking_card_text(user, booking, slot, session), reply_markup=_telegram_main_keyboard_for_booking(booking.id, user))
 
 
 def _telegram_send_schedule(chat_id: str, user: User, session: Session) -> None:
@@ -1032,12 +1151,12 @@ def _telegram_send_schedule(chat_id: str, user: User, session: Session) -> None:
     lines = ['Ближайшие занятия:']
     for booking, slot, _ in items:
         lines.append(_telegram_booking_summary_line(user, booking, slot, session))
-    kb = _telegram_main_keyboard_for_booking(items[0][0].id) if items else None
+    kb = _telegram_main_keyboard_for_booking(items[0][0].id, user) if items else None
     _send_telegram(chat_id, '\n'.join(lines), reply_markup=kb)
 
 
-def _telegram_send_link(chat_id: str) -> None:
-    dash = _dashboard_url()
+def _telegram_send_link(chat_id: str, user: User) -> None:
+    dash = _dashboard_url(user)
     if not dash:
         _send_telegram(chat_id, 'Публичный адрес сайта DoskoLink ещё не настроен. Укажите DL_PUBLIC_APP_URL в Railway.')
         return
@@ -1133,13 +1252,13 @@ async def telegram_webhook(
 
     if command == '/start' and arg:
         ok, reply, linked_user = _telegram_link_user_from_token(session, arg, chat_id, username=tg_username, first_name=tg_first_name)
-        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url()}]]} if linked_user and _dashboard_url() else None
+        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url(linked_user)}]]} if linked_user and _dashboard_url(linked_user) else None
         _send_telegram(chat_id, reply, reply_markup=kb)
         return {'ok': True}
 
     if not command and text.startswith('dl_'):
         ok, reply, linked_user = _telegram_link_user_from_token(session, text, chat_id, username=tg_username, first_name=tg_first_name)
-        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url()}]]} if linked_user and _dashboard_url() else None
+        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url(linked_user)}]]} if linked_user and _dashboard_url(linked_user) else None
         _send_telegram(chat_id, reply, reply_markup=kb)
         return {'ok': True}
 
@@ -1156,7 +1275,8 @@ async def telegram_webhook(
 
     if command in {'/start', '/help'}:
         if user:
-            _send_telegram(chat_id, _telegram_welcome_text(user), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url()}]]} if _dashboard_url() else None)
+            dash = _dashboard_url(user)
+            _send_telegram(chat_id, _telegram_welcome_text(user), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]} if dash else None)
         else:
             _telegram_reply_not_linked(chat_id)
         return {'ok': True}
@@ -1173,12 +1293,20 @@ async def telegram_webhook(
         _telegram_send_next(chat_id, user, session)
     elif command == '/schedule':
         _telegram_send_schedule(chat_id, user, session)
+    elif command == '/stats':
+        if _telegram_role_key(user) == 'admin':
+            _telegram_send_admin_stats(chat_id, session)
+        else:
+            _send_telegram(chat_id, 'Команда /stats доступна только администратору. Остальные команды подстраиваются по вашей роли автоматически.')
+    elif command == '/whoami':
+        dash = _dashboard_url(user)
+        _send_telegram(chat_id, _telegram_whoami_text(user, session), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]} if dash else None)
     elif command == '/link':
-        _telegram_send_link(chat_id)
+        _telegram_send_link(chat_id, user)
     elif command == '/unlink':
         _telegram_unlink(chat_id, user, session)
     else:
-        _send_telegram(chat_id, _telegram_help_text(str(getattr(user, 'role', 'student') or 'student')))
+        _send_telegram(chat_id, _telegram_help_text(_telegram_role_key(user)))
 
     return {'ok': True}
 

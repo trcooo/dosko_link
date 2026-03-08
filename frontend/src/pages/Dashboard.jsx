@@ -49,6 +49,23 @@ function roleTitle(role) {
   return 'Кабинет'
 }
 
+function telegramRoleLabel(role) {
+  if (role === 'tutor') return 'репетитор'
+  if (role === 'admin') return 'админ'
+  return 'ученик'
+}
+
+function telegramRoleHint(role) {
+  if (role === 'tutor') return 'Бот автоматически покажет ваших учеников, занятия и статусы подтверждения.'
+  if (role === 'admin') return 'Бот автоматически покажет сводку платформы, ближайшие уроки и admin-команду /stats.'
+  return 'Бот автоматически покажет ваши занятия, репетиторов и статусы подтверждения.'
+}
+
+function telegramSuggestedCommands(role) {
+  if (role === 'admin') return ['/whoami', '/today', '/next', '/schedule', '/stats']
+  return ['/whoami', '/today', '/next', '/schedule']
+}
+
 function attendanceStatusLabel(v) {
   const s = String(v || 'pending')
   if (s === 'confirmed') return 'подтверждено'
@@ -944,6 +961,12 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
               {tgLink?.connected
                 ? `Подключено: ${settings.telegram_username ? '@' + settings.telegram_username : (settings.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(settings.telegram_linked_at)}`
                 : 'Telegram ещё не подключён. Нажми кнопку ниже, открой бота и отправь команду /start по готовой ссылке.'}
+            </div>
+            <div className="footerNote" style={{ marginTop: 8 }}>
+              Роль определяется автоматически: <b>{telegramRoleLabel(tgLink?.role || me?.role)}</b>. {telegramRoleHint(tgLink?.role || me?.role)}
+            </div>
+            <div className="footerNote" style={{ marginTop: 8 }}>
+              Быстрые команды: {telegramSuggestedCommands(tgLink?.role || me?.role).join(' · ')}
             </div>
             {tgLink?.bot_username ? (
               <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{tgLink.bot_username}</div>
