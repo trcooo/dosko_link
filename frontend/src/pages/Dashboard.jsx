@@ -82,6 +82,22 @@ function telegramConnectUrl(link) {
   return ''
 }
 
+
+function telegramAppUrl(link) {
+  const token = String(link?.token || '').trim()
+  const username = telegramBotUsername(link)
+  if (username && token) return `tg://resolve?domain=${username}&start=${encodeURIComponent(token)}`
+  if (username) return `tg://resolve?domain=${username}`
+  return ''
+}
+
+function telegramStartCommand(link) {
+  const direct = String(link?.start_command || '').trim()
+  if (direct) return direct
+  const token = String(link?.token || '').trim()
+  return token ? `/start ${token}` : '/start'
+}
+
 function attendanceStatusLabel(v) {
   const s = String(v || 'pending')
   if (s === 'confirmed') return 'подтверждено'
@@ -597,14 +613,37 @@ export default function Dashboard() {
   }
 
 
+
+  async function copyTelegramStart(linkObj = tgLink) {
+    const cmd = telegramStartCommand(linkObj)
+    if (!cmd || cmd === '/start') return false
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(cmd)
+        return true
+      }
+    } catch {}
+    return false
+  }
+
+  function goToTelegram(linkObj) {
+    const webUrl = telegramConnectUrl(linkObj)
+    if (!webUrl) {
+      setErr('Не удалось собрать ссылку Telegram. Нажми «Новая ссылка» или проверь токен бота.')
+      return false
+    }
+    setErr('')
+    window.location.assign(webUrl)
+    return true
+  }
+
   async function refreshTelegramLink() {
     setSaving(true)
     setErr('')
     try {
       const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
       setTgLink(data || null)
-      const url = telegramConnectUrl(data)
-      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+      goToTelegram(data)
     } catch (e) {
       setErr(e.message || 'Не удалось обновить ссылку Telegram')
     } finally {
@@ -613,12 +652,7 @@ export default function Dashboard() {
   }
 
   function openTelegramLink() {
-    const url = telegramConnectUrl(tgLink)
-    if (!url) {
-      setErr('Не удалось собрать ссылку Telegram. Нажми «Новая ссылка» или проверь токен бота.')
-      return
-    }
-    window.open(url, '_blank', 'noopener,noreferrer')
+    goToTelegram(tgLink)
   }
 
   async function unlinkTelegram() {
@@ -982,7 +1016,7 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             <div className="small" style={{ marginTop: 6 }}>
               {tgLink?.connected
                 ? `Подключено: ${settings.telegram_username ? '@' + settings.telegram_username : (settings.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(settings.telegram_linked_at)}`
-                : 'Telegram ещё не подключён. Нажми кнопку ниже, открой бота и отправь команду /start по готовой ссылке.'}
+                : 'Telegram ещё не подключён. Нажми кнопку ниже. Мы откроем бота и скопируем полную команду /start с кодом на случай, если deep link не сработает.'}
             </div>
             <div className="footerNote" style={{ marginTop: 8 }}>
               Роль определяется автоматически: <b>{telegramRoleLabel(tgLink?.role || me?.role)}</b>. {telegramRoleHint(tgLink?.role || me?.role)}
@@ -999,8 +1033,11 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             {tgLink?.token ? (
               <>
                 <div className="label">Резервный код подключения</div>
-                <input className="input" value={tgLink.token} readOnly />
-                <div className="footerNote">Если deep link не откроется, можно вручную отправить боту: /start {tgLink.token}</div>
+                <input className="input" value={telegramStartCommand(tgLink)} readOnly />
+                <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+                  <button className="btn" type="button" onClick={() => copyTelegramStart(tgLink)}>Скопировать /start-команду</button>
+                </div>
+                <div className="footerNote">Важно: в Telegram нужна полная команда с кодом. Просто /start без токена не подключит аккаунт.</div>
               </>
             ) : null}
           </div>

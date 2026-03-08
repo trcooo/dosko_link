@@ -51,6 +51,22 @@ function telegramConnectUrl(link) {
   return ''
 }
 
+
+function telegramAppUrl(link) {
+  const token = String(link?.token || '').trim()
+  const username = telegramBotUsername(link)
+  if (username && token) return `tg://resolve?domain=${username}&start=${encodeURIComponent(token)}`
+  if (username) return `tg://resolve?domain=${username}`
+  return ''
+}
+
+function telegramStartCommand(link) {
+  const direct = String(link?.start_command || '').trim()
+  if (direct) return direct
+  const token = String(link?.token || '').trim()
+  return token ? `/start ${token}` : '/start'
+}
+
 function formatDateTimeShort(v) {
   if (!v) return '—'
   try { return new Date(v).toLocaleString() } catch { return String(v) }
@@ -105,13 +121,32 @@ export default function Admin() {
     }
   }
 
-  function openTelegramConnect() {
-    const url = telegramConnectUrl(telegramLink)
-    if (!url) {
+
+  async function copyTelegramStart(linkObj = telegramLink) {
+    const cmd = telegramStartCommand(linkObj)
+    if (!cmd || cmd === '/start') return false
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(cmd)
+        return true
+      }
+    } catch {}
+    return false
+  }
+
+  function goToTelegram(linkObj) {
+    const webUrl = telegramConnectUrl(linkObj)
+    if (!webUrl) {
       setErr('Не удалось собрать Telegram-ссылку. Нажми «Новая ссылка».')
-      return
+      return false
     }
-    window.open(url, '_blank', 'noopener,noreferrer')
+    setErr('')
+    window.location.assign(webUrl)
+    return true
+  }
+
+  function openTelegramConnect() {
+    goToTelegram(telegramLink)
   }
 
   async function refreshTelegramConnect() {
@@ -121,8 +156,7 @@ export default function Admin() {
     try {
       const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
       setTelegramLink(data || null)
-      const url = telegramConnectUrl(data)
-      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+      goToTelegram(data)
     } catch (e) {
       setErr(e.message || 'Не удалось обновить Telegram-ссылку')
     } finally {
@@ -398,8 +432,11 @@ export default function Admin() {
           {telegramLink?.token ? (
             <div style={{ marginTop: 12 }}>
               <div className="label">Резервный код подключения</div>
-              <input className="input" value={telegramLink.token} readOnly />
-              <div className="footerNote">Если браузер не открыл Telegram, отправь боту вручную: /start {telegramLink.token}</div>
+              <input className="input" value={telegramStartCommand(telegramLink)} readOnly />
+              <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+                <button className="btn" type="button" onClick={() => copyTelegramStart(telegramLink)}>Скопировать /start-команду</button>
+              </div>
+              <div className="footerNote">Важно: в Telegram нужна полная команда с кодом. Просто /start без токена не подключит аккаунт.</div>
             </div>
           ) : null}
         </div>

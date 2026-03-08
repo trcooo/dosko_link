@@ -729,6 +729,7 @@ class TelegramLinkOut(BaseModel):
     bot_username: str = ""
     deep_link_url: str = ""
     token: str = ""
+    start_command: str = ""
     expires_at: Optional[datetime] = None
     linked_chat_id: Optional[str] = None
     linked_username: Optional[str] = None
@@ -848,6 +849,7 @@ def _telegram_link_payload(session: Session, user: User, force_new: bool = False
         bot_username=_telegram_bot_username(),
         deep_link_url=_telegram_deep_link(row.token),
         token=row.token,
+        start_command=f'/start {row.token}',
         expires_at=row.expires_at,
         linked_chat_id=getattr(user, 'telegram_chat_id', None),
         linked_username=getattr(user, 'telegram_username', None),
@@ -1147,7 +1149,9 @@ def _telegram_find_user_by_chat(session: Session, chat_id: str) -> Optional[User
 
 
 def _telegram_reply_not_linked(chat_id: str) -> None:
-    txt = 'Этот Telegram ещё не подключён к DoskoLink. Откройте кабинет на сайте, нажмите «Подключить Telegram» и вернитесь в бот по deep link.'
+    txt = (
+        'Этот Telegram ещё не подключён к DoskoLink. '        'Откройте кабинет на сайте и нажмите «Подключить Telegram». '        'Важно: простая команда /start без кода не сработает — нужен deep link или команда вида /start dl_...'
+    )
     dash = _public_app_url()
     kb = {'inline_keyboard': [[{'text': 'Открыть DoskoLink', 'url': dash}]]} if dash else None
     _send_telegram(chat_id, txt, reply_markup=kb)
