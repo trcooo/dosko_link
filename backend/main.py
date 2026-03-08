@@ -1329,12 +1329,22 @@ async def telegram_webhook(
     token_candidate = ''
     if command == '/start' and arg:
         token_candidate = arg
-    elif not command and (text.startswith('dl_') or text.startswith('DL_')):
+        # Accept manual variants like "/start dl 66577" or extra spaces/newlines.
+        if token_candidate.lower().startswith('dl '):
+            token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
+        token_candidate = re.sub(r'\s+', '', token_candidate)
+    elif not command and (text.startswith('dl_') or text.startswith('DL_') or text.lower().startswith('dl ')):
         token_candidate = text
+        if token_candidate.lower().startswith('dl '):
+            token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
+        token_candidate = re.sub(r'\s+', '', token_candidate)
     else:
         m_start = re.match(r'^/start_?(dl_[A-Za-z0-9_\-]+)$', text, re.I)
         if m_start:
             token_candidate = str(m_start.group(1) or '').strip()
+    if token_candidate.lower().startswith('dl '):
+        token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
+    token_candidate = str(token_candidate or '').strip()
 
     if token_candidate:
         ok, reply, linked_user = _telegram_link_user_from_token(session, token_candidate, chat_id, username=tg_username, first_name=tg_first_name)

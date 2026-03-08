@@ -53,6 +53,13 @@ def _ensure_schema() -> None:
         _exec('ALTER TABLE "user" ADD COLUMN balance INTEGER DEFAULT 0')
         _exec('ALTER TABLE "user" ADD COLUMN earnings INTEGER DEFAULT 0')
 
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN role_snapshot VARCHAR DEFAULT "student"')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN created_at DATETIME')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN expires_at DATETIME')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN used_at DATETIME')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN used_chat_id VARCHAR')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN is_active BOOLEAN DEFAULT 1')
+
         _exec('ALTER TABLE booking ADD COLUMN reminder_sent BOOLEAN DEFAULT 0')
         _exec('ALTER TABLE booking ADD COLUMN reminder_sent_at DATETIME')
         _exec('ALTER TABLE booking ADD COLUMN price INTEGER DEFAULT 0')
@@ -91,6 +98,13 @@ def _ensure_schema() -> None:
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS notify_telegram BOOLEAN DEFAULT FALSE')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS balance INTEGER DEFAULT 0')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS earnings INTEGER DEFAULT 0')
+
+        _exec("ALTER TABLE telegramlinktoken ADD COLUMN IF NOT EXISTS role_snapshot VARCHAR DEFAULT 'student'")
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN IF NOT EXISTS created_at TIMESTAMP')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN IF NOT EXISTS used_at TIMESTAMP')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN IF NOT EXISTS used_chat_id VARCHAR')
+        _exec('ALTER TABLE telegramlinktoken ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE')
 
         _exec('ALTER TABLE booking ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE')
         _exec('ALTER TABLE booking ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMP')
