@@ -98,6 +98,12 @@ function telegramStartCommand(link) {
   return token ? `/start ${token}` : '/start'
 }
 
+function telegramShortStartCommand(link) {
+  const shortDirect = String(link?.short_start_command || '').trim()
+  if (shortDirect) return shortDirect
+  return telegramStartCommand(link)
+}
+
 function attendanceStatusLabel(v) {
   const s = String(v || 'pending')
   if (s === 'confirmed') return 'подтверждено'
@@ -615,7 +621,7 @@ export default function Dashboard() {
 
 
   async function copyTelegramStart(linkObj = tgLink) {
-    const cmd = telegramStartCommand(linkObj)
+    const cmd = telegramShortStartCommand(linkObj)
     if (!cmd || cmd === '/start') return false
     try {
       if (navigator?.clipboard?.writeText) {
@@ -646,13 +652,13 @@ export default function Dashboard() {
     return true
   }
 
-  async function refreshTelegramLink() {
+  async function refreshTelegramLink(openAfter = true) {
     setSaving(true)
     setErr('')
     try {
       const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
       setTgLink(data || null)
-      goToTelegram(data)
+      if (openAfter) await goToTelegram(data)
     } catch (e) {
       setErr(e.message || 'Не удалось обновить ссылку Telegram')
     } finally {
@@ -661,7 +667,7 @@ export default function Dashboard() {
   }
 
   function openTelegramLink() {
-    goToTelegram(tgLink)
+    refreshTelegramLink(true)
   }
 
   async function unlinkTelegram() {
@@ -1036,24 +1042,25 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(tgLink)}</div>
             <div className="footerNote" style={{ marginTop: 8 }}>Если Telegram не привяжется автоматически после перехода, просто нажми «Скопировать команду» и вставь её в чат бота.</div>
             <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
-              <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving || !telegramConnectUrl(tgLink)}>Подключить Telegram</button>
-              <button className="btn" onClick={refreshTelegramLink} disabled={saving}>Новая ссылка</button>
+              <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving}>Подключить Telegram</button>
+              <button className="btn" onClick={() => copyTelegramStart(tgLink)} disabled={saving || !tgLink?.token}>Скопировать команду</button>
+              <button className="btn" onClick={() => refreshTelegramLink(true)} disabled={saving}>Новая ссылка</button>
               <button className="btn" onClick={unlinkTelegram} disabled={saving || !tgLink?.connected}>Отвязать</button>
             </div>
             {tgLink?.token ? (
               <>
-                <div className="label">Готовая команда для Telegram</div>
+                <div className="label">Короткая команда для ручного запуска</div>
+                <input className="input" value={telegramShortStartCommand(tgLink)} readOnly />
+                <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Это безопасный короткий код подключения. Просто /start без кода не подключит аккаунт.</div>
+                <div className="label" style={{ marginTop: 10 }}>Полная команда</div>
                 <input className="input" value={telegramStartCommand(tgLink)} readOnly />
-                <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-                  <button className="btn" type="button" onClick={() => copyTelegramStart(tgLink)}>Скопировать команду</button>
-                </div>
-                <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без токена не подключит аккаунт.</div>
               </>
             ) : null}
           </div>
 
           <details style={{ marginTop: 14 }}>
-            <summary className="small" style={{ cursor: 'pointer' }}>Ручной режим (chat_id) — только если deep link недоступен</summary>
+            <summary className="small" style={{ cursor: 'pointer' }}>Старый ручной режим (chat_id) — не отправляй этот номер боту</summary>
+            <div className="footerNote" style={{ marginBottom: 8 }}>Этот блок нужен только для старого сценария. Для бота используй кнопку «Скопировать команду» выше, а не chat_id.</div>
             <div className="label">Telegram chat_id</div>
             <input className="input" value={settings.telegram_chat_id || ''} onChange={(e) => setSettings({ ...settings, telegram_chat_id: e.target.value })} placeholder="например, 123456789" />
           </details>

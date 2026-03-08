@@ -729,7 +729,9 @@ class TelegramLinkOut(BaseModel):
     bot_username: str = ""
     deep_link_url: str = ""
     token: str = ""
+    short_code: str = ""
     start_command: str = ""
+    short_start_command: str = ""
     expires_at: Optional[datetime] = None
     linked_chat_id: Optional[str] = None
     linked_username: Optional[str] = None
@@ -843,13 +845,16 @@ def _get_or_create_telegram_link_token(session: Session, user: User, force_new: 
 
 def _telegram_link_payload(session: Session, user: User, force_new: bool = False) -> TelegramLinkOut:
     row = _get_or_create_telegram_link_token(session, user, force_new=force_new)
+    short_code = _telegram_short_code_for_token(session, row.token)
     return TelegramLinkOut(
         connected=bool(getattr(user, 'telegram_chat_id', None)),
         role=str(getattr(user, 'role', 'student') or 'student'),
         bot_username=_telegram_bot_username(),
         deep_link_url=_telegram_deep_link(row.token),
         token=row.token,
+        short_code=short_code,
         start_command=f'/start {row.token}',
+        short_start_command=f'/start {short_code}' if short_code else '',
         expires_at=row.expires_at,
         linked_chat_id=getattr(user, 'telegram_chat_id', None),
         linked_username=getattr(user, 'telegram_username', None),
@@ -1088,11 +1093,41 @@ def _telegram_welcome_text(user: User) -> str:
     )
 
 
+def _telegram_short_code_for_token(session: Session, token_value: str) -> str:
+    token_value = str(token_value or '').strip()
+    if not token_value:
+        return ''
+    min_len = min(len(token_value), 10)
+    max_len = len(token_value)
+    if max_len <= min_len:
+        return token_value
+    for length in range(min_len, max_len + 1):
+        prefix = token_value[:length]
+        matches = session.exec(
+            select(TelegramLinkToken)
+            .where(TelegramLinkToken.token.startswith(prefix))
+            .where(TelegramLinkToken.is_active == True)
+            .where(TelegramLinkToken.used_at == None)
+        ).all()
+        if len(matches) == 1:
+            return prefix
+    return token_value
+
+
 def _telegram_find_link_token(session: Session, token_value: str) -> Optional[TelegramLinkToken]:
     token_value = str(token_value or '').strip()
     if not token_value:
         return None
-    return session.exec(select(TelegramLinkToken).where(TelegramLinkToken.token == token_value)).first()
+    row = session.exec(select(TelegramLinkToken).where(TelegramLinkToken.token == token_value)).first()
+    if row:
+        return row
+    rows = session.exec(
+        select(TelegramLinkToken)
+        .where(TelegramLinkToken.token.startswith(token_value))
+        .where(TelegramLinkToken.is_active == True)
+        .where(TelegramLinkToken.used_at == None)
+    ).all()
+    return rows[0] if len(rows) == 1 else None
 
 
 def _telegram_link_user_from_token(
@@ -1150,7 +1185,10 @@ def _telegram_find_user_by_chat(session: Session, chat_id: str) -> Optional[User
 
 def _telegram_reply_not_linked(chat_id: str) -> None:
     txt = (
-        'Этот Telegram ещё не подключён к DoskoLink. '        'Откройте кабинет на сайте и нажмите «Подключить Telegram». '        'Важно: простая команда /start без кода не сработает — нужен deep link или команда вида /start dl_...'
+        'Этот Telegram ещё не подключён к DoskoLink. '
+        'Откройте кабинет на сайте и нажмите «Подключить Telegram». '
+        'Если deep link не сработал, нажмите «Скопировать команду» в кабинете и вставьте её в чат целиком. '
+        'Важно: простая команда /start без кода не сработает.'
     )
     dash = _public_app_url()
     kb = {'inline_keyboard': [[{'text': 'Открыть DoskoLink', 'url': dash}]]} if dash else None
@@ -1294,7 +1332,7 @@ async def telegram_webhook(
         _send_telegram(chat_id, reply, reply_markup=kb)
         return {'ok': True}
 
-    if not command and text.startswith('dl_'):
+    if not command and (text.startswith('dl_') or text.startswith('DL_')):
         ok, reply, linked_user = _telegram_link_user_from_token(session, text, chat_id, username=tg_username, first_name=tg_first_name)
         kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url(linked_user)}]]} if linked_user and _dashboard_url(linked_user) else None
         _send_telegram(chat_id, reply, reply_markup=kb)

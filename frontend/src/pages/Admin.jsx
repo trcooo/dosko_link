@@ -67,6 +67,12 @@ function telegramStartCommand(link) {
   return token ? `/start ${token}` : '/start'
 }
 
+function telegramShortStartCommand(link) {
+  const shortDirect = String(link?.short_start_command || '').trim()
+  if (shortDirect) return shortDirect
+  return telegramStartCommand(link)
+}
+
 function formatDateTimeShort(v) {
   if (!v) return '—'
   try { return new Date(v).toLocaleString() } catch { return String(v) }
@@ -123,7 +129,7 @@ export default function Admin() {
 
 
   async function copyTelegramStart(linkObj = telegramLink) {
-    const cmd = telegramStartCommand(linkObj)
+    const cmd = telegramShortStartCommand(linkObj)
     if (!cmd || cmd === '/start') return false
     try {
       if (navigator?.clipboard?.writeText) {
@@ -155,17 +161,17 @@ export default function Admin() {
   }
 
   function openTelegramConnect() {
-    goToTelegram(telegramLink)
+    refreshTelegramConnect(true)
   }
 
-  async function refreshTelegramConnect() {
+  async function refreshTelegramConnect(openAfter = true) {
     if (!canLoad) return
     setSaving(true)
     setErr('')
     try {
       const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
       setTelegramLink(data || null)
-      goToTelegram(data)
+      if (openAfter) await goToTelegram(data)
     } catch (e) {
       setErr(e.message || 'Не удалось обновить Telegram-ссылку')
     } finally {
@@ -434,19 +440,19 @@ export default function Admin() {
               <div className="footerNote" style={{ marginTop: 8 }}>Если Telegram не привяжется автоматически после перехода, просто нажми «Скопировать команду» и вставь её в чат бота.</div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving || !telegramConnectUrl(telegramLink)}>Подключить Telegram</button>
-              <button className="btn" onClick={refreshTelegramConnect} disabled={saving}>Новая ссылка</button>
+              <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving}>Подключить Telegram</button>
+              <button className="btn" onClick={() => copyTelegramStart(telegramLink)} disabled={saving || !telegramLink?.token}>Скопировать команду</button>
+              <button className="btn" onClick={() => refreshTelegramConnect(true)} disabled={saving}>Новая ссылка</button>
               <button className="btn" onClick={unlinkTelegramConnect} disabled={saving || !telegramLink?.connected}>Отвязать</button>
             </div>
           </div>
           {telegramLink?.token ? (
             <div style={{ marginTop: 12 }}>
-              <div className="label">Готовая команда для Telegram</div>
+              <div className="label">Короткая команда для ручного запуска</div>
+              <input className="input" value={telegramShortStartCommand(telegramLink)} readOnly />
+              <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Это безопасный короткий код подключения. Просто /start без кода не подключит аккаунт.</div>
+              <div className="label" style={{ marginTop: 10 }}>Полная команда</div>
               <input className="input" value={telegramStartCommand(telegramLink)} readOnly />
-              <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-                <button className="btn" type="button" onClick={() => copyTelegramStart(telegramLink)}>Скопировать команду</button>
-              </div>
-              <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без токена не подключит аккаунт.</div>
             </div>
           ) : null}
         </div>
