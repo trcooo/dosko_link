@@ -1326,14 +1326,18 @@ async def telegram_webhook(
             command = str(m.group('cmd') or '').lower()
             arg = str(m.group('arg') or '').strip()
 
+    token_candidate = ''
     if command == '/start' and arg:
-        ok, reply, linked_user = _telegram_link_user_from_token(session, arg, chat_id, username=tg_username, first_name=tg_first_name)
-        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url(linked_user)}]]} if linked_user and _dashboard_url(linked_user) else None
-        _send_telegram(chat_id, reply, reply_markup=kb)
-        return {'ok': True}
+        token_candidate = arg
+    elif not command and (text.startswith('dl_') or text.startswith('DL_')):
+        token_candidate = text
+    else:
+        m_start = re.match(r'^/start_?(dl_[A-Za-z0-9_\-]+)$', text, re.I)
+        if m_start:
+            token_candidate = str(m_start.group(1) or '').strip()
 
-    if not command and (text.startswith('dl_') or text.startswith('DL_')):
-        ok, reply, linked_user = _telegram_link_user_from_token(session, text, chat_id, username=tg_username, first_name=tg_first_name)
+    if token_candidate:
+        ok, reply, linked_user = _telegram_link_user_from_token(session, token_candidate, chat_id, username=tg_username, first_name=tg_first_name)
         kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url(linked_user)}]]} if linked_user and _dashboard_url(linked_user) else None
         _send_telegram(chat_id, reply, reply_markup=kb)
         return {'ok': True}

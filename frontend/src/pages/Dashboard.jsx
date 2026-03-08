@@ -104,6 +104,49 @@ function telegramShortStartCommand(link) {
   return telegramStartCommand(link)
 }
 
+async function copyTextSafe(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  try {
+    if (window.isSecureContext && navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+  } catch {}
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = value
+    ta.setAttribute('readonly', 'readonly')
+    ta.style.position = 'fixed'
+    ta.style.top = '-1000px'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    ta.setSelectionRange(0, ta.value.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return Boolean(ok)
+  } catch {
+    return false
+  }
+}
+
+function openExternalUrl(url) {
+  const target = String(url || '').trim()
+  if (!target) return false
+  try {
+    const w = window.open(target, '_blank', 'noopener,noreferrer')
+    if (w) return true
+  } catch {}
+  try {
+    window.location.href = target
+    return true
+  } catch {
+    return false
+  }
+}
+
 function attendanceStatusLabel(v) {
   const s = String(v || 'pending')
   if (s === 'confirmed') return 'подтверждено'
@@ -300,6 +343,7 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState([])
   const [slots, setSlots] = useState([])
   const [err, setErr] = useState('')
+  const [tgNotice, setTgNotice] = useState('')
   const [saving, setSaving] = useState(false)
 
   const [settings, setSettings] = useState(null)
@@ -450,6 +494,8 @@ export default function Dashboard() {
   async function saveProfile() {
     setSaving(true)
     setErr('')
+    setTgNotice('')
+    setTgNotice('')
     try {
       const payload = {
         display_name: profile.display_name,
@@ -621,14 +667,19 @@ export default function Dashboard() {
 
 
   async function copyTelegramStart(linkObj = tgLink) {
-    const cmd = telegramShortStartCommand(linkObj)
-    if (!cmd || cmd === '/start') return false
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(cmd)
-        return true
-      }
-    } catch {}
+    const cmd = telegramStartCommand(linkObj)
+    if (!cmd || cmd === '/start') {
+      setErr('Сначала нажми «Новая ссылка», чтобы получить команду подключения.')
+      return false
+    }
+    const ok = await copyTextSafe(cmd)
+    if (ok) {
+      setErr('')
+      setTgNotice(`Команда скопирована: ${cmd}`)
+      return true
+    }
+    setTgNotice('')
+    setErr(`Не удалось скопировать автоматически. Отправь боту вручную: ${cmd}`)
     return false
   }
 
@@ -641,14 +692,16 @@ export default function Dashboard() {
     }
     setErr('')
     await copyTelegramStart(linkObj)
+    const opened = openExternalUrl(webUrl)
     if (appUrl) {
-      window.location.assign(appUrl)
       window.setTimeout(() => {
-        window.location.assign(webUrl)
-      }, 700)
-      return true
+        try { window.location.href = appUrl } catch {}
+      }, 250)
     }
-    window.location.assign(webUrl)
+    if (!opened) {
+      setErr('Не удалось открыть Telegram автоматически. Скопируй команду ниже и открой бота вручную.')
+      return false
+    }
     return true
   }
 
@@ -1041,6 +1094,7 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             </div>
             <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(tgLink)}</div>
             <div className="footerNote" style={{ marginTop: 8 }}>Если Telegram не привяжется автоматически после перехода, просто нажми «Скопировать команду» и вставь её в чат бота.</div>
+            {tgNotice ? <div className="footerNote" style={{ marginTop: 8 }}><b>{tgNotice}</b></div> : null}
             <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
               <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving}>Подключить Telegram</button>
               <button className="btn" onClick={() => copyTelegramStart(tgLink)} disabled={saving || !tgLink?.token}>Скопировать команду</button>
@@ -1050,10 +1104,10 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             {tgLink?.token ? (
               <>
                 <div className="label">Короткая команда для ручного запуска</div>
-                <input className="input" value={telegramShortStartCommand(tgLink)} readOnly />
+                <input className="input" value={telegramShortStartCommand(tgLink)} readOnly onFocus={(e) => e.target.select()} />
                 <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Это безопасный короткий код подключения. Просто /start без кода не подключит аккаунт.</div>
                 <div className="label" style={{ marginTop: 10 }}>Полная команда</div>
-                <input className="input" value={telegramStartCommand(tgLink)} readOnly />
+                <input className="input" value={telegramStartCommand(tgLink)} readOnly onFocus={(e) => e.target.select()} />
               </>
             ) : null}
           </div>
