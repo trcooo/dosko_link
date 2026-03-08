@@ -62,8 +62,14 @@ function telegramRoleHint(role) {
 }
 
 function telegramSuggestedCommands(role) {
-  if (role === 'admin') return ['/whoami', '/today', '/next', '/schedule', '/stats']
-  return ['/whoami', '/today', '/next', '/schedule']
+  if (role === 'admin') return ['/menu', '/whoami', '/today', '/next', '/schedule', '/stats']
+  return ['/menu', '/whoami', '/today', '/next', '/schedule', '/confirm', '/decline']
+}
+
+function telegramFeatureBullets(role) {
+  if (role === 'admin') return ['Сводка платформы', 'Быстрый доступ к /stats', 'Проверка подключённого аккаунта']
+  if (role === 'tutor') return ['Подтверждение участия', 'Ближайшие занятия', 'Переход в кабинет и комнату']
+  return ['Ближайшие уроки', 'Подтверждение участия', 'Подсказки без лишних кликов']
 }
 
 const TELEGRAM_BOT_FALLBACK = 'doskolink_bot'
@@ -1079,36 +1085,57 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             </label>
           </div>
 
-          <div className="card" style={{ marginTop: 14 }}>
-            <div style={{ fontWeight: 800 }}>Telegram-ассистент</div>
-            <div className="small" style={{ marginTop: 6 }}>
-              {tgLink?.connected
-                ? `Подключено: ${settings.telegram_username ? '@' + settings.telegram_username : (settings.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(settings.telegram_linked_at)}`
-                : 'Telegram ещё не подключён. Нажми кнопку ниже. Мы откроем бота и скопируем полную команду /start с кодом на случай, если deep link не сработает.'}
+          <div className="telegramAssistantCard" style={{ marginTop: 14 }}>
+            <div className="telegramAssistantHeader">
+              <div className="telegramAssistantMeta">
+                <img className="telegramAvatar" src="/telegram-assistant-avatar.png" alt="DoskoLink Assistant" />
+                <div>
+                  <div className="telegramEyebrow">DoskoLink Assistant</div>
+                  <div className="telegramTitle">Telegram-ассистент</div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    {tgLink?.connected
+                      ? `Подключено: ${settings.telegram_username ? '@' + settings.telegram_username : (settings.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(settings.telegram_linked_at)}`
+                      : 'Telegram ещё не подключён. Нажми кнопку ниже — мы откроем бота, подготовим deep link и резервную /start-команду.'}
+                  </div>
+                </div>
+              </div>
+              <div className="telegramBadgeWrap">
+                <div className="telegramRoleBadge">Роль: {telegramRoleLabel(tgLink?.role || me?.role)}</div>
+                <div className="telegramBotBadge">@{telegramBotUsername(tgLink)}</div>
+              </div>
             </div>
-            <div className="footerNote" style={{ marginTop: 8 }}>
-              Роль определяется автоматически: <b>{telegramRoleLabel(tgLink?.role || me?.role)}</b>. {telegramRoleHint(tgLink?.role || me?.role)}
+
+            <div className="telegramFeatureGrid">
+              {telegramFeatureBullets(tgLink?.role || me?.role).map((item) => (
+                <div key={item} className="telegramFeatureItem">{item}</div>
+              ))}
             </div>
-            <div className="footerNote" style={{ marginTop: 8 }}>
-              Быстрые команды: {telegramSuggestedCommands(tgLink?.role || me?.role).join(' · ')}
+
+            <div className="footerNote" style={{ marginTop: 10 }}>
+              {telegramRoleHint(tgLink?.role || me?.role)}
             </div>
-            <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(tgLink)}</div>
-            <div className="footerNote" style={{ marginTop: 8 }}>Если Telegram не привяжется автоматически после перехода, просто нажми «Скопировать команду» и вставь её в чат бота.</div>
-            {tgNotice ? <div className="footerNote" style={{ marginTop: 8 }}><b>{tgNotice}</b></div> : null}
-            <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+            <div className="telegramCommandRow">
+              {telegramSuggestedCommands(tgLink?.role || me?.role).map((cmd) => (
+                <span key={cmd} className="telegramCommandChip">{cmd}</span>
+              ))}
+            </div>
+            <div className="footerNote" style={{ marginTop: 8 }}>После подключения внутри бота появится удобная клавиатура с кнопками: «Сегодня», «Ближайшее», «Расписание», «Подтвердить» и «Помощь».</div>
+            {tgNotice ? <div className="telegramNotice"><b>{tgNotice}</b></div> : null}
+
+            <div className="telegramActionRow">
               <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving}>Подключить Telegram</button>
               <button className="btn" onClick={() => copyTelegramStart(tgLink)} disabled={saving || !tgLink?.token}>Скопировать команду</button>
               <button className="btn" onClick={() => refreshTelegramLink(true)} disabled={saving}>Новая ссылка</button>
               <button className="btn" onClick={unlinkTelegram} disabled={saving || !tgLink?.connected}>Отвязать</button>
             </div>
             {tgLink?.token ? (
-              <>
+              <div className="telegramCodeGroup">
                 <div className="label">Короткая команда для ручного запуска</div>
-                <input className="input" value={telegramShortStartCommand(tgLink)} readOnly onFocus={(e) => e.target.select()} />
-                <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Это безопасный короткий код подключения. Просто /start без кода не подключит аккаунт.</div>
+                <input className="input telegramCodeInput" value={telegramShortStartCommand(tgLink)} readOnly onFocus={(e) => e.target.select()} />
+                <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без кода не подключит аккаунт.</div>
                 <div className="label" style={{ marginTop: 10 }}>Полная команда</div>
-                <input className="input" value={telegramStartCommand(tgLink)} readOnly onFocus={(e) => e.target.select()} />
-              </>
+                <input className="input telegramCodeInput" value={telegramStartCommand(tgLink)} readOnly onFocus={(e) => e.target.select()} />
+              </div>
             ) : null}
           </div>
 

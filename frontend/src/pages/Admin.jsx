@@ -73,6 +73,10 @@ function telegramShortStartCommand(link) {
   return telegramStartCommand(link)
 }
 
+function telegramFeatureBullets() {
+  return ['Сводка платформы', 'Команда /stats', 'Клавиатура быстрых действий в боте']
+}
+
 async function copyTextSafe(text) {
   const value = String(text || '').trim()
   if (!value) return false
@@ -480,34 +484,53 @@ export default function Admin() {
           {tgNotice && <div className="footerNote">{tgNotice}</div>}
         </div>
 
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-            <div>
-              <div style={{ fontWeight: 900, fontSize: 18 }}>Telegram для админа</div>
-              <div className="small" style={{ marginTop: 6 }}>
-                {telegramLink?.connected
-                  ? `Подключено: ${telegramSettings?.telegram_username ? '@' + telegramSettings.telegram_username : (telegramSettings?.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(telegramSettings?.telegram_linked_at)}`
-                  : 'Подключи Telegram прямо из админ-панели: кнопка откроет бота с готовой командой /start.'}
+        <div className="telegramAssistantCard">
+          <div className="telegramAssistantHeader">
+            <div className="telegramAssistantMeta">
+              <img className="telegramAvatar" src="/telegram-assistant-avatar.png" alt="DoskoLink Assistant" />
+              <div>
+                <div className="telegramEyebrow">Admin control</div>
+                <div className="telegramTitle">Telegram для админа</div>
+                <div className="small" style={{ marginTop: 6 }}>
+                  {telegramLink?.connected
+                    ? `Подключено: ${telegramSettings?.telegram_username ? '@' + telegramSettings.telegram_username : (telegramSettings?.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(telegramSettings?.telegram_linked_at)}`
+                    : 'Подключи Telegram прямо из админ-панели: кнопка откроет бота с готовой командой /start.'}
+                </div>
               </div>
-              <div className="footerNote" style={{ marginTop: 8 }}>Роль определяется автоматически: <b>админ</b>. Доступны /whoami, /today, /next, /schedule и /stats.</div>
-              <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{telegramBotUsername(telegramLink)}</div>
-              <div className="footerNote" style={{ marginTop: 8 }}>Если Telegram не привяжется автоматически после перехода, просто нажми «Скопировать команду» и вставь её в чат бота.</div>
-              {tgNotice ? <div className="footerNote" style={{ marginTop: 8 }}><b>{tgNotice}</b></div> : null}
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving}>Подключить Telegram</button>
-              <button className="btn" onClick={() => copyTelegramStart(telegramLink)} disabled={saving || !telegramLink?.token}>Скопировать команду</button>
-              <button className="btn" onClick={() => refreshTelegramConnect(true)} disabled={saving}>Новая ссылка</button>
-              <button className="btn" onClick={unlinkTelegramConnect} disabled={saving || !telegramLink?.connected}>Отвязать</button>
+            <div className="telegramBadgeWrap">
+              <div className="telegramRoleBadge">Роль: админ</div>
+              <div className="telegramBotBadge">@{telegramBotUsername(telegramLink)}</div>
             </div>
           </div>
+
+          <div className="telegramFeatureGrid">
+            {telegramFeatureBullets().map((item) => (
+              <div key={item} className="telegramFeatureItem">{item}</div>
+            ))}
+          </div>
+
+          <div className="telegramCommandRow">
+            {['/menu', '/whoami', '/today', '/next', '/schedule', '/stats'].map((cmd) => (
+              <span key={cmd} className="telegramCommandChip">{cmd}</span>
+            ))}
+          </div>
+          <div className="footerNote" style={{ marginTop: 8 }}>Внутри бота для админа появится клавиатура с быстрым доступом к сводке, расписанию и кабинету.</div>
+          {tgNotice ? <div className="telegramNotice"><b>{tgNotice}</b></div> : null}
+
+          <div className="telegramActionRow">
+            <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving}>Подключить Telegram</button>
+            <button className="btn" onClick={() => copyTelegramStart(telegramLink)} disabled={saving || !telegramLink?.token}>Скопировать команду</button>
+            <button className="btn" onClick={() => refreshTelegramConnect(true)} disabled={saving}>Новая ссылка</button>
+            <button className="btn" onClick={unlinkTelegramConnect} disabled={saving || !telegramLink?.connected}>Отвязать</button>
+          </div>
           {telegramLink?.token ? (
-            <div style={{ marginTop: 12 }}>
+            <div className="telegramCodeGroup">
               <div className="label">Короткая команда для ручного запуска</div>
-              <input className="input" value={telegramShortStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
-              <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Это безопасный короткий код подключения. Просто /start без кода не подключит аккаунт.</div>
+              <input className="input telegramCodeInput" value={telegramShortStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
+              <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без кода не подключит аккаунт.</div>
               <div className="label" style={{ marginTop: 10 }}>Полная команда</div>
-              <input className="input" value={telegramStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
+              <input className="input telegramCodeInput" value={telegramStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
             </div>
           ) : null}
         </div>
