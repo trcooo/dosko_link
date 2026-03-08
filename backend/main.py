@@ -4,14 +4,17 @@ import base64
 import io
 import json
 import os
+import re
+import secrets
 import smtplib
 import ssl
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import Response, FileResponse
@@ -62,9 +65,10 @@ from models import (
     BookingMeta,
     NotificationLog,
     ReviewDetail,
+    TelegramLinkToken,
 )
 
-app = FastAPI(title="DL MVP API", version="0.8.0")
+app = FastAPI(title="DL MVP API", version="0.9.0")
 
 # -----------------
 # CORS
@@ -235,19 +239,44 @@ def _send_email(to_email: str, subject: str, text_body: str) -> None:
         server.sendmail(cfg["from"], [to_email], msg.encode("utf-8"))
 
 
-def _send_telegram(chat_id: str, text_body: str) -> None:
+def _telegram_bot_username() -> str:
+    return str(os.getenv("DL_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+
+
+def _public_app_url() -> str:
+    return str(os.getenv("DL_PUBLIC_APP_URL") or "").strip().rstrip("/")
+
+
+def _telegram_deep_link(token: str) -> str:
+    bot_username = _telegram_bot_username()
+    if not bot_username or not token:
+        return ""
+    return f"https://t.me/{bot_username}?start={urllib.parse.quote(token)}"
+
+
+def _send_telegram(chat_id: str, text_body: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
     token = os.getenv("DL_TELEGRAM_BOT_TOKEN")
     if not (token and chat_id):
         print(f"[notify/telegram] chat_id={chat_id} body={text_body[:180]}")
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": text_body}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    payload: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text_body,
+        "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
             resp.read()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[notify/telegram/error] {e}")
 
 
 def _notify_user_direct(u: Optional[User], subject: str, text_body: str) -> None:
@@ -350,6 +379,9 @@ def _me_payload(user: User) -> Dict[str, Any]:
         "role": user.role,
         "is_active": getattr(user, "is_active", True),
         "telegram_chat_id": getattr(user, "telegram_chat_id", None),
+        "telegram_username": getattr(user, "telegram_username", None),
+        "telegram_first_name": getattr(user, "telegram_first_name", None),
+        "telegram_linked_at": getattr(user, "telegram_linked_at", None),
         "notify_email": getattr(user, "notify_email", True),
         "notify_telegram": getattr(user, "notify_telegram", False),
     }
@@ -489,6 +521,9 @@ class MeSettingsIn(BaseModel):
 def me_settings(user: User = Depends(get_current_user)):
     return {
         "telegram_chat_id": getattr(user, "telegram_chat_id", None),
+        "telegram_username": getattr(user, "telegram_username", None),
+        "telegram_first_name": getattr(user, "telegram_first_name", None),
+        "telegram_linked_at": getattr(user, "telegram_linked_at", None),
         "notify_email": getattr(user, "notify_email", True),
         "notify_telegram": getattr(user, "notify_telegram", False),
     }
@@ -645,9 +680,507 @@ def update_me_settings(
     return {
         "ok": True,
         "telegram_chat_id": getattr(user, "telegram_chat_id", None),
+        "telegram_username": getattr(user, "telegram_username", None),
+        "telegram_first_name": getattr(user, "telegram_first_name", None),
+        "telegram_linked_at": getattr(user, "telegram_linked_at", None),
         "notify_email": getattr(user, "notify_email", True),
         "notify_telegram": getattr(user, "notify_telegram", False),
     }
+
+
+
+class TelegramLinkOut(BaseModel):
+    connected: bool = False
+    role: str
+    bot_username: str = ""
+    deep_link_url: str = ""
+    token: str = ""
+    expires_at: Optional[datetime] = None
+    linked_chat_id: Optional[str] = None
+    linked_username: Optional[str] = None
+    linked_at: Optional[datetime] = None
+
+
+def _telegram_status_label(v: str) -> str:
+    s = str(v or 'pending').strip().lower()
+    if s == 'confirmed':
+        return 'подтверждено'
+    if s == 'declined':
+        return 'не подтверждено'
+    return 'ожидает подтверждения'
+
+
+def _user_label_for_telegram(u: Optional[User], session: Session) -> str:
+    if not u:
+        return 'Пользователь'
+    if str(getattr(u, 'role', '')) == 'tutor':
+        prof = session.exec(select(TutorProfile).where(TutorProfile.user_id == u.id)).first()
+        if prof and str(getattr(prof, 'display_name', '') or '').strip():
+            return str(prof.display_name).strip()
+    first = str(getattr(u, 'telegram_first_name', '') or '').strip()
+    if first:
+        return first
+    email = str(getattr(u, 'email', '') or '').strip()
+    if email and '@' in email:
+        base = email.split('@', 1)[0].replace('.', ' ').replace('_', ' ').strip()
+        if base:
+            return base
+    return f'Пользователь #{getattr(u, "id", "")}'
+
+
+def _room_url_for_booking(booking_id: int) -> str:
+    app_url = _public_app_url()
+    if not app_url:
+        return ''
+    return f"{app_url}/room/booking-{int(booking_id)}"
+
+
+def _dashboard_url() -> str:
+    app_url = _public_app_url()
+    if not app_url:
+        return ''
+    return f"{app_url}/dashboard"
+
+
+def _telegram_link_token_ttl_minutes() -> int:
+    return max(5, int(os.getenv('DL_TELEGRAM_LINK_TTL_MIN', '30') or '30'))
+
+
+def _deactivate_telegram_tokens_for_user(session: Session, user_id: int) -> None:
+    rows = session.exec(
+        select(TelegramLinkToken).where(TelegramLinkToken.user_id == int(user_id)).where(TelegramLinkToken.is_active == True)
+    ).all()
+    for row in rows:
+        row.is_active = False
+        session.add(row)
+
+
+def _get_or_create_telegram_link_token(session: Session, user: User, force_new: bool = False) -> TelegramLinkToken:
+    now = datetime.utcnow()
+    if force_new:
+        _deactivate_telegram_tokens_for_user(session, user.id)
+        session.commit()
+    else:
+        existing = session.exec(
+            select(TelegramLinkToken)
+            .where(TelegramLinkToken.user_id == int(user.id))
+            .where(TelegramLinkToken.is_active == True)
+            .where(TelegramLinkToken.used_at == None)
+            .order_by(TelegramLinkToken.created_at.desc())
+        ).first()
+        if existing and existing.expires_at > now:
+            return existing
+
+    token_value = f"dl_{user.id}_{secrets.token_urlsafe(18)}"
+    row = TelegramLinkToken(
+        user_id=int(user.id),
+        token=token_value,
+        role_snapshot=str(getattr(user, 'role', 'student') or 'student'),
+        expires_at=now + timedelta(minutes=_telegram_link_token_ttl_minutes()),
+        is_active=True,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def _telegram_link_payload(session: Session, user: User, force_new: bool = False) -> TelegramLinkOut:
+    row = _get_or_create_telegram_link_token(session, user, force_new=force_new)
+    return TelegramLinkOut(
+        connected=bool(getattr(user, 'telegram_chat_id', None)),
+        role=str(getattr(user, 'role', 'student') or 'student'),
+        bot_username=_telegram_bot_username(),
+        deep_link_url=_telegram_deep_link(row.token),
+        token=row.token,
+        expires_at=row.expires_at,
+        linked_chat_id=getattr(user, 'telegram_chat_id', None),
+        linked_username=getattr(user, 'telegram_username', None),
+        linked_at=getattr(user, 'telegram_linked_at', None),
+    )
+
+
+def _telegram_upcoming_bookings_for_user(
+    user: User,
+    session: Session,
+    *,
+    window_start: Optional[datetime] = None,
+    window_end: Optional[datetime] = None,
+    upcoming_only: bool = False,
+    limit: int = 5,
+) -> List[Tuple[Booking, Slot, datetime]]:
+    stmt = select(Booking).where(Booking.status == 'confirmed')
+    if str(getattr(user, 'role', 'student')) == 'tutor':
+        stmt = stmt.where(Booking.tutor_user_id == int(user.id))
+    else:
+        stmt = stmt.where(Booking.student_user_id == int(user.id))
+    rows = session.exec(stmt).all()
+    items: List[Tuple[Booking, Slot, datetime]] = []
+    now = _utcnow()
+    for b in rows:
+        slot = _slot_for_booking(b, session)
+        if not slot:
+            continue
+        start_at = _as_utc(getattr(slot, 'starts_at', None))
+        if not start_at:
+            continue
+        if upcoming_only and start_at < now:
+            continue
+        if window_start and start_at < window_start:
+            continue
+        if window_end and start_at > window_end:
+            continue
+        items.append((b, slot, start_at))
+    items.sort(key=lambda x: x[2])
+    return items[:max(1, int(limit))]
+
+
+def _telegram_counterpart_label(viewer: User, booking: Booking, session: Session) -> str:
+    if str(getattr(viewer, 'role', 'student')) == 'tutor':
+        other = session.get(User, booking.student_user_id)
+        return _user_label_for_telegram(other, session)
+    other = session.get(User, booking.tutor_user_id)
+    return _user_label_for_telegram(other, session)
+
+
+def _telegram_booking_summary_line(viewer: User, booking: Booking, slot: Slot, session: Session) -> str:
+    start_at = _as_utc(getattr(slot, 'starts_at', None)) or getattr(slot, 'starts_at', None)
+    end_at = _as_utc(getattr(slot, 'ends_at', None)) or getattr(slot, 'ends_at', None)
+    when = start_at.strftime('%d.%m %H:%M') if isinstance(start_at, datetime) else str(getattr(slot, 'starts_at', ''))
+    if isinstance(end_at, datetime):
+        when += f"–{end_at.strftime('%H:%M')}"
+    counterpart = _telegram_counterpart_label(viewer, booking, session)
+    if str(getattr(viewer, 'role', 'student')) == 'tutor':
+        my_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+        other_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+        counterpart_label = 'ученик'
+    else:
+        my_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+        other_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+        counterpart_label = 'репетитор'
+    return f"• #{booking.id} · {when} · {counterpart_label}: {counterpart} · вы: {my_status} / вторая сторона: {other_status}"
+
+
+def _telegram_booking_card_text(viewer: User, booking: Booking, slot: Slot, session: Session) -> str:
+    start_at = _as_utc(getattr(slot, 'starts_at', None)) or getattr(slot, 'starts_at', None)
+    end_at = _as_utc(getattr(slot, 'ends_at', None)) or getattr(slot, 'ends_at', None)
+    if isinstance(start_at, datetime):
+        when = start_at.strftime('%d.%m.%Y %H:%M')
+    else:
+        when = str(getattr(slot, 'starts_at', ''))
+    duration = ''
+    if isinstance(start_at, datetime) and isinstance(end_at, datetime):
+        mins = max(1, int((end_at - start_at).total_seconds() // 60))
+        duration = f"\nДлительность: {mins} мин"
+    counterpart = _telegram_counterpart_label(viewer, booking, session)
+    room_url = _room_url_for_booking(booking.id)
+    if str(getattr(viewer, 'role', 'student')) == 'tutor':
+        my_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+        other_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+        counterpart_label = 'Ученик'
+    else:
+        my_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
+        other_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
+        counterpart_label = 'Репетитор'
+    text = (
+        f"Ближайшее занятие #{booking.id}\n"
+        f"Когда: {when}{duration}\n"
+        f"{counterpart_label}: {counterpart}\n"
+        f"Ваш статус: {my_status}\n"
+        f"Вторая сторона: {other_status}"
+    )
+    if room_url:
+        text += f"\nКомната: {room_url}"
+    return text
+
+
+def _telegram_main_keyboard_for_booking(booking_id: int) -> Optional[Dict[str, Any]]:
+    buttons: List[List[Dict[str, str]]] = []
+    room_url = _room_url_for_booking(booking_id)
+    if room_url:
+        buttons.append([{'text': 'Открыть занятие', 'url': room_url}])
+    dash = _dashboard_url()
+    if dash:
+        buttons.append([{'text': 'Личный кабинет DoskoLink', 'url': dash}])
+    if not buttons:
+        return None
+    return {'inline_keyboard': buttons}
+
+
+def _telegram_help_text(role: str) -> str:
+    base = [
+        'Команды DoskoLink в Telegram:',
+        '/today — занятия на сегодня',
+        '/tomorrow — занятия на завтра',
+        '/next — ближайшее занятие',
+        '/schedule — ближайшие 5 занятий',
+        '/link — открыть кабинет DoskoLink',
+        '/unlink — отвязать Telegram от аккаунта',
+    ]
+    if role == 'tutor':
+        base.append('Роль определена как репетитор — бот покажет ваших учеников и уроки.')
+    else:
+        base.append('Роль определена как ученик — бот покажет ваши занятия и репетиторов.')
+    return '\n'.join(base)
+
+
+def _telegram_welcome_text(user: User) -> str:
+    role = 'репетитор' if str(getattr(user, 'role', 'student')) == 'tutor' else 'ученик'
+    return (
+        'Telegram подключён к DoskoLink.\n'
+        f'Роль: {role}.\n\n'
+        f'{_telegram_help_text(str(getattr(user, "role", "student") or "student"))}'
+    )
+
+
+def _telegram_find_link_token(session: Session, token_value: str) -> Optional[TelegramLinkToken]:
+    token_value = str(token_value or '').strip()
+    if not token_value:
+        return None
+    return session.exec(select(TelegramLinkToken).where(TelegramLinkToken.token == token_value)).first()
+
+
+def _telegram_link_user_from_token(
+    session: Session,
+    token_value: str,
+    chat_id: str,
+    username: str = '',
+    first_name: str = '',
+) -> Tuple[bool, str, Optional[User]]:
+    now = datetime.utcnow()
+    row = _telegram_find_link_token(session, token_value)
+    if not row or not bool(getattr(row, 'is_active', False)):
+        return False, 'Ссылка для подключения не найдена или уже использована. Откройте кабинет DoskoLink и создайте новую ссылку.', None
+    if row.used_at is not None:
+        return False, 'Эта ссылка уже была использована. Создайте новую ссылку в кабинете DoskoLink.', None
+    if row.expires_at <= now:
+        row.is_active = False
+        session.add(row)
+        session.commit()
+        return False, 'Срок действия ссылки истёк. Сгенерируйте новую ссылку в кабинете DoskoLink.', None
+    user = session.get(User, row.user_id)
+    if not user:
+        return False, 'Аккаунт DoskoLink не найден.', None
+
+    other = session.exec(select(User).where(User.telegram_chat_id == str(chat_id))).first()
+    if other and other.id != user.id:
+        other.telegram_chat_id = None
+        other.telegram_username = None
+        other.telegram_first_name = None
+        other.telegram_linked_at = None
+        other.notify_telegram = False
+        session.add(other)
+
+    _deactivate_telegram_tokens_for_user(session, user.id)
+    user.telegram_chat_id = str(chat_id)
+    user.telegram_username = str(username or '').strip() or None
+    user.telegram_first_name = str(first_name or '').strip() or None
+    user.telegram_linked_at = now
+    user.notify_telegram = True
+    session.add(user)
+
+    row.used_at = now
+    row.used_chat_id = str(chat_id)
+    row.is_active = False
+    session.add(row)
+
+    session.commit()
+    session.refresh(user)
+    return True, _telegram_welcome_text(user), user
+
+
+def _telegram_find_user_by_chat(session: Session, chat_id: str) -> Optional[User]:
+    return session.exec(select(User).where(User.telegram_chat_id == str(chat_id))).first()
+
+
+def _telegram_reply_not_linked(chat_id: str) -> None:
+    txt = 'Этот Telegram ещё не подключён к DoskoLink. Откройте кабинет на сайте, нажмите «Подключить Telegram» и вернитесь в бот по deep link.'
+    dash = _dashboard_url()
+    kb = {'inline_keyboard': [[{'text': 'Открыть DoskoLink', 'url': dash}]]} if dash else None
+    _send_telegram(chat_id, txt, reply_markup=kb)
+
+
+def _telegram_send_today_like(chat_id: str, user: User, session: Session, day_offset: int = 0) -> None:
+    now = _utcnow() + timedelta(days=day_offset)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1) - timedelta(seconds=1)
+    items = _telegram_upcoming_bookings_for_user(user, session, window_start=day_start, window_end=day_end, upcoming_only=False, limit=12)
+    title = 'на сегодня' if day_offset == 0 else 'на завтра'
+    if not items:
+        _send_telegram(chat_id, f'У вас нет занятий {title}.')
+        return
+    lines = [f'Ваши занятия {title}:']
+    for booking, slot, _ in items:
+        lines.append(_telegram_booking_summary_line(user, booking, slot, session))
+    _send_telegram(chat_id, '\n'.join(lines))
+
+
+def _telegram_send_next(chat_id: str, user: User, session: Session) -> None:
+    items = _telegram_upcoming_bookings_for_user(user, session, upcoming_only=True, limit=1)
+    if not items:
+        _send_telegram(chat_id, 'Ближайших занятий пока нет.')
+        return
+    booking, slot, _ = items[0]
+    _send_telegram(chat_id, _telegram_booking_card_text(user, booking, slot, session), reply_markup=_telegram_main_keyboard_for_booking(booking.id))
+
+
+def _telegram_send_schedule(chat_id: str, user: User, session: Session) -> None:
+    items = _telegram_upcoming_bookings_for_user(user, session, upcoming_only=True, limit=5)
+    if not items:
+        _send_telegram(chat_id, 'Ближайших занятий пока нет.')
+        return
+    lines = ['Ближайшие занятия:']
+    for booking, slot, _ in items:
+        lines.append(_telegram_booking_summary_line(user, booking, slot, session))
+    kb = _telegram_main_keyboard_for_booking(items[0][0].id) if items else None
+    _send_telegram(chat_id, '\n'.join(lines), reply_markup=kb)
+
+
+def _telegram_send_link(chat_id: str) -> None:
+    dash = _dashboard_url()
+    if not dash:
+        _send_telegram(chat_id, 'Публичный адрес сайта DoskoLink ещё не настроен. Укажите DL_PUBLIC_APP_URL в Railway.')
+        return
+    _send_telegram(chat_id, f'Личный кабинет DoskoLink: {dash}', reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]})
+
+
+def _telegram_unlink(chat_id: str, user: User, session: Session) -> None:
+    user.telegram_chat_id = None
+    user.telegram_username = None
+    user.telegram_first_name = None
+    user.telegram_linked_at = None
+    user.notify_telegram = False
+    session.add(user)
+    session.commit()
+    _send_telegram(chat_id, 'Telegram отвязан от аккаунта DoskoLink. Подключить заново можно из личного кабинета.')
+
+
+@app.get('/api/me/telegram-link', response_model=TelegramLinkOut)
+def me_telegram_link(
+    refresh: bool = False,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    return _telegram_link_payload(session, user, force_new=bool(refresh))
+
+
+@app.post('/api/me/telegram-link', response_model=TelegramLinkOut)
+def me_telegram_link_refresh(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    return _telegram_link_payload(session, user, force_new=True)
+
+
+@app.post('/api/me/telegram-unlink')
+def me_telegram_unlink(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    user.telegram_chat_id = None
+    user.telegram_username = None
+    user.telegram_first_name = None
+    user.telegram_linked_at = None
+    user.notify_telegram = False
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return {
+        'ok': True,
+        'telegram_chat_id': getattr(user, 'telegram_chat_id', None),
+        'telegram_username': getattr(user, 'telegram_username', None),
+        'telegram_first_name': getattr(user, 'telegram_first_name', None),
+        'telegram_linked_at': getattr(user, 'telegram_linked_at', None),
+        'notify_telegram': getattr(user, 'notify_telegram', False),
+    }
+
+
+@app.post('/api/integrations/telegram/webhook')
+async def telegram_webhook(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    expected_secret = str(os.getenv('DL_TELEGRAM_WEBHOOK_SECRET') or '').strip()
+    if expected_secret:
+        got = str(request.headers.get('x-telegram-bot-api-secret-token') or '').strip()
+        if got != expected_secret:
+            raise HTTPException(403, 'bad telegram webhook secret')
+
+    try:
+        update = await request.json()
+    except Exception:
+        return {'ok': True}
+
+    message = (update or {}).get('message') or (update or {}).get('edited_message') or {}
+    chat = message.get('chat') or {}
+    chat_id = str(chat.get('id') or '').strip()
+    chat_type = str(chat.get('type') or '').strip()
+    text = str(message.get('text') or '').strip()
+    from_user = message.get('from') or {}
+    tg_username = str(from_user.get('username') or '').strip()
+    tg_first_name = str(from_user.get('first_name') or '').strip()
+
+    if not chat_id or chat_type not in {'private', ''}:
+        return {'ok': True}
+
+    command = ''
+    arg = ''
+    if text.startswith('/'):
+        m = re.match(r'^(?P<cmd>/[A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(?P<arg>.*))?$', text, re.S)
+        if m:
+            command = str(m.group('cmd') or '').lower()
+            arg = str(m.group('arg') or '').strip()
+
+    if command == '/start' and arg:
+        ok, reply, linked_user = _telegram_link_user_from_token(session, arg, chat_id, username=tg_username, first_name=tg_first_name)
+        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url()}]]} if linked_user and _dashboard_url() else None
+        _send_telegram(chat_id, reply, reply_markup=kb)
+        return {'ok': True}
+
+    if not command and text.startswith('dl_'):
+        ok, reply, linked_user = _telegram_link_user_from_token(session, text, chat_id, username=tg_username, first_name=tg_first_name)
+        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url()}]]} if linked_user and _dashboard_url() else None
+        _send_telegram(chat_id, reply, reply_markup=kb)
+        return {'ok': True}
+
+    user = _telegram_find_user_by_chat(session, chat_id)
+    if user:
+        if tg_username and tg_username != str(getattr(user, 'telegram_username', '') or ''):
+            user.telegram_username = tg_username
+            session.add(user)
+            session.commit()
+        if tg_first_name and tg_first_name != str(getattr(user, 'telegram_first_name', '') or ''):
+            user.telegram_first_name = tg_first_name
+            session.add(user)
+            session.commit()
+
+    if command in {'/start', '/help'}:
+        if user:
+            _send_telegram(chat_id, _telegram_welcome_text(user), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url()}]]} if _dashboard_url() else None)
+        else:
+            _telegram_reply_not_linked(chat_id)
+        return {'ok': True}
+
+    if not user:
+        _telegram_reply_not_linked(chat_id)
+        return {'ok': True}
+
+    if command == '/today':
+        _telegram_send_today_like(chat_id, user, session, day_offset=0)
+    elif command == '/tomorrow':
+        _telegram_send_today_like(chat_id, user, session, day_offset=1)
+    elif command == '/next':
+        _telegram_send_next(chat_id, user, session)
+    elif command == '/schedule':
+        _telegram_send_schedule(chat_id, user, session)
+    elif command == '/link':
+        _telegram_send_link(chat_id)
+    elif command == '/unlink':
+        _telegram_unlink(chat_id, user, session)
+    else:
+        _send_telegram(chat_id, _telegram_help_text(str(getattr(user, 'role', 'student') or 'student')))
+
+    return {'ok': True}
 
 
 # -----------------

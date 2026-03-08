@@ -42,6 +42,9 @@ def _ensure_schema() -> None:
     if dialect.startswith("sqlite"):
         # SQLite: no IF NOT EXISTS for ADD COLUMN in older versions; ignore failures.
         _exec('ALTER TABLE "user" ADD COLUMN telegram_chat_id VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN telegram_username VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN telegram_first_name VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN telegram_linked_at DATETIME')
         _exec('ALTER TABLE "user" ADD COLUMN is_active BOOLEAN DEFAULT 1')
         _exec('ALTER TABLE "user" ADD COLUMN token_version INTEGER DEFAULT 0')
         _exec('ALTER TABLE "user" ADD COLUMN last_login_at DATETIME')
@@ -78,6 +81,9 @@ def _ensure_schema() -> None:
 
     elif dialect.startswith("postgres"):
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_username VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_first_name VARCHAR')
+        _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_linked_at TIMESTAMP')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP')

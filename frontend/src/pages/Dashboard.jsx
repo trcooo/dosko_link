@@ -107,6 +107,11 @@ function formatTime(dt) {
   return new Date(dt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+function formatDateTimeShort(v) {
+  if (!v) return '—'
+  try { return new Date(v).toLocaleString() } catch { return String(v) }
+}
+
 function buildMonthCells(monthDate) {
   const first = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
   const startWeekday = (first.getDay() + 6) % 7 // Mon=0
@@ -243,6 +248,7 @@ export default function Dashboard() {
   const [saving, setSaving] = useState(false)
 
   const [settings, setSettings] = useState(null)
+  const [tgLink, setTgLink] = useState(null)
 
   const [oldPw, setOldPw] = useState('')
   const [newPw, setNewPw] = useState('')
@@ -325,6 +331,10 @@ export default function Dashboard() {
 
       const st = await apiFetch('/api/me/settings', { token })
       setSettings(st || null)
+      try {
+        const tg = await apiFetch('/api/me/telegram-link', { token })
+        setTgLink(tg || null)
+      } catch { setTgLink(null) }
 
       try {
         const c = await apiFetch('/api/catalog')
@@ -548,6 +558,40 @@ export default function Dashboard() {
       setSettings(updated)
     } catch (e) {
       setErr(e.message || 'Не удалось сохранить настройки')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+
+  async function refreshTelegramLink() {
+    setSaving(true)
+    setErr('')
+    try {
+      const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
+      setTgLink(data || null)
+      if (data?.deep_link_url) window.open(data.deep_link_url, '_blank', 'noopener,noreferrer')
+    } catch (e) {
+      setErr(e.message || 'Не удалось обновить ссылку Telegram')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function openTelegramLink() {
+    if (tgLink?.deep_link_url) window.open(tgLink.deep_link_url, '_blank', 'noopener,noreferrer')
+  }
+
+  async function unlinkTelegram() {
+    setSaving(true)
+    setErr('')
+    try {
+      const st = await apiFetch('/api/me/telegram-unlink', { method: 'POST', token })
+      setSettings(prev => ({ ...(prev || {}), ...(st || {}) }))
+      const tg = await apiFetch('/api/me/telegram-link', { token })
+      setTgLink(tg || null)
+    } catch (e) {
+      setErr(e.message || 'Не удалось отвязать Telegram')
     } finally {
       setSaving(false)
     }
@@ -881,7 +925,7 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
 
         <div className="card">
           <div style={{ fontWeight: 900, fontSize: 18 }}>Уведомления</div>
-          <div className="sub">В MVP уведомления приходят по email (если настроен SMTP) и/или в Telegram (если привязать chat_id).</div>
+          <div className="sub">Email работает как раньше, а Telegram теперь лучше подключать через безопасный deep link из кабинета.</div>
 
           <div className="row" style={{ alignItems: 'center' }}>
             <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -894,13 +938,42 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
             </label>
           </div>
 
-          <div className="label">Telegram chat_id (если включён Telegram)</div>
-          <input className="input" value={settings.telegram_chat_id || ''} onChange={(e) => setSettings({ ...settings, telegram_chat_id: e.target.value })} placeholder="например, 123456789" />
+          <div className="card" style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 800 }}>Telegram-ассистент</div>
+            <div className="small" style={{ marginTop: 6 }}>
+              {tgLink?.connected
+                ? `Подключено: ${settings.telegram_username ? '@' + settings.telegram_username : (settings.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(settings.telegram_linked_at)}`
+                : 'Telegram ещё не подключён. Нажми кнопку ниже, открой бота и отправь команду /start по готовой ссылке.'}
+            </div>
+            {tgLink?.bot_username ? (
+              <div className="footerNote" style={{ marginTop: 8 }}>Бот: @{tgLink.bot_username}</div>
+            ) : (
+              <div className="footerNote" style={{ marginTop: 8 }}>Сначала укажи DL_TELEGRAM_BOT_USERNAME в Railway, чтобы кнопка подключения работала автоматически.</div>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+              <button className="btn btnPrimary" onClick={openTelegramLink} disabled={saving || !tgLink?.deep_link_url}>Подключить Telegram</button>
+              <button className="btn" onClick={refreshTelegramLink} disabled={saving}>Новая ссылка</button>
+              <button className="btn" onClick={unlinkTelegram} disabled={saving || !tgLink?.connected}>Отвязать</button>
+            </div>
+            {tgLink?.token ? (
+              <>
+                <div className="label">Резервный код подключения</div>
+                <input className="input" value={tgLink.token} readOnly />
+                <div className="footerNote">Если deep link не откроется, можно вручную отправить боту: /start {tgLink.token}</div>
+              </>
+            ) : null}
+          </div>
+
+          <details style={{ marginTop: 14 }}>
+            <summary className="small" style={{ cursor: 'pointer' }}>Ручной режим (chat_id) — только если deep link недоступен</summary>
+            <div className="label">Telegram chat_id</div>
+            <input className="input" value={settings.telegram_chat_id || ''} onChange={(e) => setSettings({ ...settings, telegram_chat_id: e.target.value })} placeholder="например, 123456789" />
+          </details>
 
           <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
             <button className="btn btnPrimary" onClick={saveSettings} disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить настройки'}</button>
           </div>
-          <div className="footerNote">Для напоминаний за ~10 минут можно настроить Railway Cron на вызов /api/cron/reminders?key=DL_CRON_KEY.</div>
+          <div className="footerNote">Для напоминаний за ~10 минут можно настроить Railway Cron на вызов /api/cron/reminders?key=DL_CRON_KEY. Для бота нужны ещё DL_TELEGRAM_BOT_TOKEN, DL_TELEGRAM_BOT_USERNAME, DL_PUBLIC_APP_URL и webhook.</div>
         </div>
       )}
 

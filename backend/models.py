@@ -16,12 +16,27 @@ class User(SQLModel, table=True):
     last_login_at: Optional[datetime] = Field(default=None)
     # Notifications (MVP)
     telegram_chat_id: Optional[str] = Field(default=None)
+    telegram_username: Optional[str] = Field(default=None)
+    telegram_first_name: Optional[str] = Field(default=None)
+    telegram_linked_at: Optional[datetime] = Field(default=None, index=True)
     notify_email: bool = Field(default=True)
     notify_telegram: bool = Field(default=False)
     # Trial balance (MVP)
     balance: int = Field(default=0)
     earnings: int = Field(default=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TelegramLinkToken(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    token: str = Field(index=True, unique=True)
+    role_snapshot: str = Field(default="student", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime = Field(index=True)
+    used_at: Optional[datetime] = Field(default=None, index=True)
+    used_chat_id: Optional[str] = Field(default=None)
+    is_active: bool = Field(default=True, index=True)
 
 
 class TutorProfile(SQLModel, table=True):
