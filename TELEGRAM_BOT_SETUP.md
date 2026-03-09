@@ -88,3 +88,23 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 - If the same chat is linked to another account, the old link is removed.
 - Tokens expire automatically.
 - Re-linking is done only from the authenticated dashboard.
+
+
+## Inline-кнопки под карточками уроков
+
+Бот теперь поддерживает inline-кнопки под сообщениями с уроками:
+- ✅ Подтверждаю
+- ❌ Не смогу
+- 🔗 Открыть занятие
+- 🏠 Открыть кабинет
+
+Чтобы Telegram присылал на backend нажатия по inline-кнопкам, webhook должен принимать не только `message`, но и `callback_query`.
+Если вы раньше настраивали webhook только с `allowed_updates: ["message"]`, обновите его так:
+
+```bash
+curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook"   -H "Content-Type: application/json"   -d '{
+    "url": "https://<YOUR_BACKEND_DOMAIN>/api/integrations/telegram/webhook",
+    "secret_token": "<YOUR_DL_TELEGRAM_WEBHOOK_SECRET>",
+    "allowed_updates": ["message", "callback_query"]
+  }'
+```

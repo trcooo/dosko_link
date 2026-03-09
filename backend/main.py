@@ -319,6 +319,19 @@ def _send_telegram(chat_id: str, text_body: str, reply_markup: Optional[Dict[str
     _telegram_api_call("sendMessage", payload)
 
 
+def _telegram_answer_callback(callback_query_id: str, text: str = '', show_alert: bool = False) -> None:
+    if not callback_query_id:
+        return
+    payload: Dict[str, Any] = {
+        "callback_query_id": callback_query_id,
+    }
+    if text:
+        payload["text"] = text[:180]
+    if show_alert:
+        payload["show_alert"] = True
+    _telegram_api_call("answerCallbackQuery", payload)
+
+
 def _notify_user_direct(u: Optional[User], subject: str, text_body: str) -> None:
     if not u:
         return
@@ -943,6 +956,10 @@ def _telegram_booking_summary_line(viewer: User, booking: Booking, slot: Slot, s
     return f"• #{booking.id} · {when} · {counterpart_label}: {counterpart} · вы: {my_status} / вторая сторона: {other_status}"
 
 
+def _telegram_callback_data(action: str, booking_id: int) -> str:
+    return f"booking:{action}:{int(booking_id)}"
+
+
 def _telegram_booking_card_text(viewer: User, booking: Booking, slot: Slot, session: Session) -> str:
     start_at = _as_utc(getattr(slot, 'starts_at', None)) or getattr(slot, 'starts_at', None)
     end_at = _as_utc(getattr(slot, 'ends_at', None)) or getattr(slot, 'ends_at', None)
@@ -953,50 +970,59 @@ def _telegram_booking_card_text(viewer: User, booking: Booking, slot: Slot, sess
     duration = ''
     if isinstance(start_at, datetime) and isinstance(end_at, datetime):
         mins = max(1, int((end_at - start_at).total_seconds() // 60))
-        duration = f"\nДлительность: {mins} мин"
+        duration = f"{mins} мин"
     room_url = _room_url_for_booking(booking.id)
     role = _telegram_role_key(viewer)
+    lines: List[str] = []
     if role == 'admin':
         tutor_name, student_name = _telegram_participants_label(booking, session)
         tutor_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
         student_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
-        text = (
-            f"Ближайшее занятие платформы #{booking.id}\n"
-            f"Когда: {when}{duration}\n"
-            f"Репетитор: {tutor_name}\n"
-            f"Ученик: {student_name}\n"
-            f"Статусы: ученик — {student_status}, репетитор — {tutor_status}"
-        )
+        lines = [
+            f"📘 Урок #{booking.id}",
+            f"🗓 Когда: {when}",
+            f"⏱ Длительность: {duration}" if duration else '',
+            f"👩‍🏫 Репетитор: {tutor_name}",
+            f"🎓 Ученик: {student_name}",
+            f"📍 Статусы: ученик — {student_status}, репетитор — {tutor_status}",
+        ]
     else:
         counterpart = _telegram_counterpart_label(viewer, booking, session)
         if role == 'tutor':
             my_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
             other_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
-            counterpart_label = 'Ученик'
+            counterpart_label = '🎓 Ученик'
         else:
             my_status = _telegram_status_label(getattr(booking, 'student_attendance_status', 'pending'))
             other_status = _telegram_status_label(getattr(booking, 'tutor_attendance_status', 'pending'))
-            counterpart_label = 'Репетитор'
-        text = (
-            f"Ближайшее занятие #{booking.id}\n"
-            f"Когда: {when}{duration}\n"
-            f"{counterpart_label}: {counterpart}\n"
-            f"Ваш статус: {my_status}\n"
-            f"Вторая сторона: {other_status}"
-        )
+            counterpart_label = '👩‍🏫 Репетитор'
+        lines = [
+            f"📘 Урок #{booking.id}",
+            f"🗓 Когда: {when}",
+            f"⏱ Длительность: {duration}" if duration else '',
+            f"{counterpart_label}: {counterpart}",
+            f"✅ Ваш статус: {my_status}",
+            f"👥 Вторая сторона: {other_status}",
+        ]
     if room_url:
-        text += f"\nКомната: {room_url}"
-    return text
+        lines.append(f"🔗 Комната урока: {room_url}")
+    return "\n".join([line for line in lines if line])
 
 
 def _telegram_main_keyboard_for_booking(booking_id: int, viewer: Optional[User] = None) -> Optional[Dict[str, Any]]:
     buttons: List[List[Dict[str, str]]] = []
+    role = _telegram_role_key(viewer) if viewer else 'student'
+    if role in {'student', 'tutor'}:
+        buttons.append([
+            {'text': '✅ Подтверждаю', 'callback_data': _telegram_callback_data('confirm', booking_id)},
+            {'text': '❌ Не смогу', 'callback_data': _telegram_callback_data('decline', booking_id)},
+        ])
     room_url = _room_url_for_booking(booking_id)
     if room_url:
-        buttons.append([{'text': 'Открыть занятие', 'url': room_url}])
+        buttons.append([{'text': '🔗 Открыть занятие', 'url': room_url}])
     dash = _dashboard_url(viewer)
     if dash:
-        buttons.append([{'text': 'Личный кабинет DoskoLink', 'url': dash}])
+        buttons.append([{'text': '🏠 Открыть кабинет', 'url': dash}])
     if not buttons:
         return None
     return {'inline_keyboard': buttons}
@@ -1124,7 +1150,7 @@ def _telegram_help_text(role: str) -> str:
         lines.extend([
             '/confirm — подтвердить участие в ближайшем уроке',
             '/decline — отметить, что вы не сможете прийти',
-            '🤖 Нажимайте кнопки под полем ввода: так пользоваться ботом быстрее, чем печатать команды вручную.',
+            '🤖 Используйте и нижнюю клавиатуру, и inline-кнопки под карточками уроков: подтверждение и вход в урок теперь доступны в один тап.',
         ])
         if role == 'tutor':
             lines.append('🎓 Роль: репетитор. Бот показывает ваших учеников, ближайшие уроки и статусы подтверждения.')
@@ -1304,10 +1330,11 @@ def _telegram_send_today_like(chat_id: str, user: User, session: Session, day_of
     if not items:
         _send_telegram(chat_id, f'📭 У вас нет занятий {title}.', reply_markup=_telegram_menu_keyboard(user))
         return
-    lines = [f'Ваши занятия {title}:']
+    lines = [f'📅 Ваши занятия {title}:']
     for booking, slot, _ in items:
         lines.append(_telegram_booking_summary_line(user, booking, slot, session))
-    _send_telegram(chat_id, '\n'.join(lines))
+    kb = _telegram_main_keyboard_for_booking(items[0][0].id, user) if items else None
+    _send_telegram(chat_id, '\n'.join(lines), reply_markup=kb)
 
 
 def _telegram_send_next(chat_id: str, user: User, session: Session) -> None:
@@ -1324,7 +1351,7 @@ def _telegram_send_schedule(chat_id: str, user: User, session: Session) -> None:
     if not items:
         _send_telegram(chat_id, '📭 Ближайших занятий пока нет.', reply_markup=_telegram_menu_keyboard(user))
         return
-    lines = ['Ближайшие занятия:']
+    lines = ['🗓 Ближайшие занятия:']
     for booking, slot, _ in items:
         lines.append(_telegram_booking_summary_line(user, booking, slot, session))
     kb = _telegram_main_keyboard_for_booking(items[0][0].id, user) if items else None
@@ -1404,6 +1431,53 @@ async def telegram_webhook(
     try:
         update = await request.json()
     except Exception:
+        return {'ok': True}
+
+    callback_query = (update or {}).get('callback_query') or {}
+    if callback_query:
+        callback_id = str(callback_query.get('id') or '').strip()
+        data = str(callback_query.get('data') or '').strip()
+        callback_message = callback_query.get('message') or {}
+        callback_chat = callback_message.get('chat') or {}
+        chat_id = str(callback_chat.get('id') or '').strip()
+        chat_type = str(callback_chat.get('type') or '').strip()
+        from_user = callback_query.get('from') or {}
+        tg_username = str(from_user.get('username') or '').strip()
+        tg_first_name = str(from_user.get('first_name') or '').strip()
+
+        if chat_id and chat_type in {'private', ''}:
+            user = _telegram_find_user_by_chat(session, chat_id)
+            if user:
+                if tg_username and tg_username != str(getattr(user, 'telegram_username', '') or ''):
+                    user.telegram_username = tg_username
+                    session.add(user)
+                    session.commit()
+                if tg_first_name and tg_first_name != str(getattr(user, 'telegram_first_name', '') or ''):
+                    user.telegram_first_name = tg_first_name
+                    session.add(user)
+                    session.commit()
+
+            if not user:
+                _telegram_answer_callback(callback_id, 'Сначала подключите Telegram к DoskoLink.', show_alert=True)
+                _telegram_reply_not_linked(chat_id)
+                return {'ok': True}
+
+            m_cb = re.match(r'^booking:(confirm|decline):(\d+)$', data)
+            if m_cb:
+                action = str(m_cb.group(1) or '').strip()
+                booking_id = str(m_cb.group(2) or '').strip()
+                _telegram_apply_attendance_status(chat_id, user, session, 'confirmed' if action == 'confirm' else 'declined', booking_id)
+                _telegram_answer_callback(callback_id, 'Статус обновлён.')
+                return {'ok': True}
+
+            if data == 'menu:help':
+                _send_telegram(chat_id, _telegram_help_text(_telegram_role_key(user)), reply_markup=_telegram_menu_keyboard(user))
+                _telegram_answer_callback(callback_id, 'Открываю помощь')
+                return {'ok': True}
+
+            _telegram_answer_callback(callback_id, 'Действие пока не поддерживается.', show_alert=False)
+            return {'ok': True}
+
         return {'ok': True}
 
     message = (update or {}).get('message') or (update or {}).get('edited_message') or {}
