@@ -74,7 +74,7 @@ function telegramShortStartCommand(link) {
 }
 
 function telegramFeatureBullets() {
-  return ['Сводка платформы', 'Команда /stats', 'Клавиатура быстрых действий в боте']
+  return ['Сводка платформы', 'Команды /stats и /balance', 'Клавиатура быстрых действий в боте']
 }
 
 async function copyTextSafe(text) {
@@ -511,11 +511,11 @@ export default function Admin() {
           </div>
 
           <div className="telegramCommandRow">
-            {['/menu', '/whoami', '/today', '/next', '/schedule', '/stats'].map((cmd) => (
+            {['/menu', '/whoami', '/today', '/next', '/schedule', '/stats', '/balance'].map((cmd) => (
               <span key={cmd} className="telegramCommandChip">{cmd}</span>
             ))}
           </div>
-          <div className="footerNote" style={{ marginTop: 8 }}>Внутри бота для админа появится клавиатура с быстрым доступом к сводке, расписанию и кабинету.</div>
+          <div className="footerNote" style={{ marginTop: 8 }}>Внутри бота для админа появится клавиатура с быстрым доступом к сводке, финансам, расписанию и кабинету.</div>
           {tgNotice ? <div className="telegramNotice"><b>{tgNotice}</b></div> : null}
 
           <div className="telegramActionRow">

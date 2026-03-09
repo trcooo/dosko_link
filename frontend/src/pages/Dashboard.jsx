@@ -56,20 +56,21 @@ function telegramRoleLabel(role) {
 }
 
 function telegramRoleHint(role) {
-  if (role === 'tutor') return 'Бот автоматически покажет ваших учеников, занятия и статусы подтверждения.'
-  if (role === 'admin') return 'Бот автоматически покажет сводку платформы, ближайшие уроки и admin-команду /stats.'
-  return 'Бот автоматически покажет ваши занятия, репетиторов и статусы подтверждения.'
+  if (role === 'tutor') return 'Бот автоматически покажет ваших учеников, занятия, домашки, прогресс и баланс. Добавлены команды /students_today, /progress и /balance для быстрой сводки.'
+  if (role === 'admin') return 'Бот автоматически покажет сводку платформы, ближайшие уроки, финансы и admin-команду /stats.'
+  return 'Бот автоматически покажет ваши занятия, репетиторов, домашки, прогресс по темам и баланс.'
 }
 
 function telegramSuggestedCommands(role) {
-  if (role === 'admin') return ['/menu', '/whoami', '/today', '/next', '/schedule', '/stats']
-  return ['/menu', '/whoami', '/today', '/next', '/schedule', '/confirm', '/decline']
+  if (role === 'admin') return ['/menu', '/whoami', '/today', '/next', '/schedule', '/stats', '/progress', '/balance']
+  if (role === 'tutor') return ['/menu', '/whoami', '/today', '/next', '/schedule', '/students_today', '/homework', '/progress', '/balance']
+  return ['/menu', '/whoami', '/today', '/next', '/schedule', '/homework', '/progress', '/balance', '/confirm']
 }
 
 function telegramFeatureBullets(role) {
-  if (role === 'admin') return ['Сводка платформы', 'Быстрый доступ к /stats', 'Проверка подключённого аккаунта']
-  if (role === 'tutor') return ['Подтверждение участия', 'Ближайшие занятия', 'Переход в кабинет и комнату']
-  return ['Ближайшие уроки', 'Подтверждение участия', 'Подсказки без лишних кликов']
+  if (role === 'admin') return ['Сводка платформы', 'Быстрый доступ к /stats', 'Финансовая команда /balance']
+  if (role === 'tutor') return ['Список учеников на сегодня', 'Домашки, прогресс и доход', 'Переход в кабинет и комнату']
+  return ['Ближайшие уроки', 'Домашки, прогресс и баланс', 'Подсказки без лишних кликов']
 }
 
 const TELEGRAM_BOT_FALLBACK = 'doskolink_bot'

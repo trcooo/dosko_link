@@ -819,6 +819,13 @@ def _dashboard_url(user: Optional[User] = None) -> str:
     return f"{app_url}{path}"
 
 
+def _wallet_url() -> str:
+    app_url = _public_app_url()
+    if not app_url:
+        return ''
+    return f"{app_url}/wallet"
+
+
 def _telegram_link_token_ttl_minutes() -> int:
     return max(5, int(os.getenv('DL_TELEGRAM_LINK_TTL_MIN', '30') or '30'))
 
@@ -1033,12 +1040,18 @@ def _telegram_menu_keyboard(role_or_user: Any) -> Dict[str, Any]:
     keyboard: List[List[Dict[str, str]]] = [
         [{'text': '📅 Сегодня'}, {'text': '⏭ Ближайшее'}],
         [{'text': '🗓 Расписание'}, {'text': '🧾 Кто я'}],
-        [{'text': '🏠 Кабинет'}, {'text': '👋 Помощь'}],
+        [{'text': '💳 Баланс'}, {'text': '🏠 Кабинет'}],
+        [{'text': '👋 Помощь'}],
     ]
-    if role in {'student', 'tutor'}:
-        keyboard.insert(2, [{'text': '✅ Подтвердить'}, {'text': '⚠️ Не смогу'}])
+    if role == 'tutor':
+        keyboard.insert(1, [{'text': '👥 Ученики сегодня'}])
+        keyboard.insert(2, [{'text': '📚 Домашки'}, {'text': '📈 Прогресс'}])
+        keyboard.insert(4, [{'text': '✅ Подтвердить'}, {'text': '⚠️ Не смогу'}])
+    elif role == 'student':
+        keyboard.insert(2, [{'text': '📚 Домашки'}, {'text': '📈 Прогресс'}])
+        keyboard.insert(3, [{'text': '✅ Подтвердить'}, {'text': '⚠️ Не смогу'}])
     if role == 'admin':
-        keyboard.insert(2, [{'text': '📊 Статистика'}])
+        keyboard.insert(2, [{'text': '📊 Статистика'}, {'text': '📈 Прогресс'}])
     return {
         'keyboard': keyboard,
         'resize_keyboard': True,
@@ -1127,6 +1140,312 @@ def _telegram_apply_attendance_status(chat_id: str, user: User, session: Session
     )
 
 
+def _telegram_homework_status_label(v: str) -> str:
+    value = str(v or 'assigned').strip().lower()
+    if value == 'submitted':
+        return '📤 отправлена'
+    if value == 'checked':
+        return '✅ проверена'
+    return '📝 активна'
+
+
+
+def _telegram_progress_status_label(v: str) -> str:
+    value = str(v or 'todo').strip().lower()
+    if value == 'done':
+        return '✅ освоено'
+    if value == 'in_progress':
+        return '🔄 в работе'
+    return '📝 запланировано'
+
+
+def _telegram_send_progress(chat_id: str, user: User, session: Session) -> None:
+    role = _telegram_role_key(user)
+    learning_url = (_public_app_url() + '/learning') if _public_app_url() else (_dashboard_url(user) or '')
+
+    if role == 'student':
+        rows = session.exec(
+            select(TopicProgress)
+            .where(TopicProgress.student_user_id == user.id)
+            .order_by(TopicProgress.updated_at.desc())
+            .limit(50)
+        ).all()
+        if not rows:
+            markup = {'inline_keyboard': [[{'text': '📈 Открыть раздел прогресса', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+            _send_telegram(chat_id, '📈 По вашим темам пока нет записей прогресса. Как только репетитор обновит темы на сайте, они появятся и здесь.', reply_markup=markup)
+            return
+
+        done = sum(1 for t in rows if str(getattr(t, 'status', '') or '').lower() == 'done')
+        in_progress = sum(1 for t in rows if str(getattr(t, 'status', '') or '').lower() == 'in_progress')
+        todo = sum(1 for t in rows if str(getattr(t, 'status', '') or '').lower() not in {'done', 'in_progress'})
+        latest = rows[:8]
+        lines = [
+            '📈 Ваш прогресс по темам',
+            f'Всего тем: {len(rows)}',
+            f'✅ Освоено: {done} • 🔄 В работе: {in_progress} • 📝 Запланировано: {todo}',
+            '',
+        ]
+        for idx, t in enumerate(latest, start=1):
+            tutor = session.get(User, int(getattr(t, 'tutor_user_id', 0) or 0))
+            updated = _as_utc(getattr(t, 'updated_at', None)) or getattr(t, 'updated_at', None)
+            updated_label = updated.strftime('%d.%m %H:%M') if isinstance(updated, datetime) else '—'
+            note = str(getattr(t, 'note', '') or '').strip().replace('\n', ' ')
+            lines.append(f'{idx}. {getattr(t, "topic", "Тема")}')
+            lines.append(f'   {_telegram_progress_status_label(getattr(t, "status", "todo"))} • обновлено: {updated_label}')
+            lines.append(f'   👩‍🏫 {_user_label_for_telegram(tutor, session)}')
+            if note:
+                lines.append(f'   {note[:140]}{"…" if len(note) > 140 else ""}')
+            lines.append('')
+        markup = {'inline_keyboard': [[{'text': '📈 Открыть раздел прогресса', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+        _send_telegram(chat_id, '\n'.join(lines).strip(), reply_markup=markup)
+        return
+
+    if role == 'tutor':
+        rows = session.exec(
+            select(TopicProgress)
+            .where(TopicProgress.tutor_user_id == user.id)
+            .order_by(TopicProgress.updated_at.desc())
+            .limit(120)
+        ).all()
+        if not rows:
+            markup = {'inline_keyboard': [[{'text': '📈 Открыть раздел прогресса', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+            _send_telegram(chat_id, '📈 У ваших учеников пока нет тем с прогрессом. Добавьте или обновите темы в разделе Learning.', reply_markup=markup)
+            return
+
+        by_student = {}
+        for row in rows:
+            sid = int(getattr(row, 'student_user_id', 0) or 0)
+            bucket = by_student.setdefault(sid, {'rows': [], 'latest': getattr(row, 'updated_at', None)})
+            bucket['rows'].append(row)
+        ordered = sorted(by_student.items(), key=lambda item: getattr(item[1]['rows'][0], 'updated_at', datetime.min), reverse=True)[:6]
+        lines = [
+            '📈 Прогресс учеников',
+            f'Учеников с данными: {len(by_student)}',
+            '',
+        ]
+        for sid, payload in ordered:
+            student = session.get(User, sid)
+            s_rows = sorted(payload['rows'], key=lambda t: getattr(t, 'updated_at', datetime.min), reverse=True)
+            done = sum(1 for t in s_rows if str(getattr(t, 'status', '') or '').lower() == 'done')
+            in_progress = sum(1 for t in s_rows if str(getattr(t, 'status', '') or '').lower() == 'in_progress')
+            todo = sum(1 for t in s_rows if str(getattr(t, 'status', '') or '').lower() not in {'done', 'in_progress'})
+            latest_dt = _as_utc(getattr(s_rows[0], 'updated_at', None)) or getattr(s_rows[0], 'updated_at', None)
+            latest_label = latest_dt.strftime('%d.%m %H:%M') if isinstance(latest_dt, datetime) else '—'
+            latest_topics = ', '.join(str(getattr(t, 'topic', 'Тема') or 'Тема').strip() for t in s_rows[:3])
+            lines.append(f'🎓 {_user_label_for_telegram(student, session)}')
+            lines.append(f'   Тем: {len(s_rows)} • ✅ {done} • 🔄 {in_progress} • 📝 {todo}')
+            lines.append(f'   Последнее обновление: {latest_label}')
+            if latest_topics:
+                lines.append(f'   Последние темы: {latest_topics}')
+            lines.append('')
+        markup = {'inline_keyboard': [[{'text': '📈 Открыть раздел прогресса', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+        _send_telegram(chat_id, '\n'.join(lines).strip(), reply_markup=markup)
+        return
+
+    rows = session.exec(select(TopicProgress).order_by(TopicProgress.updated_at.desc()).limit(300)).all()
+    students = {int(getattr(t, 'student_user_id', 0) or 0) for t in rows if getattr(t, 'student_user_id', None)}
+    tutors = {int(getattr(t, 'tutor_user_id', 0) or 0) for t in rows if getattr(t, 'tutor_user_id', None)}
+    done = sum(1 for t in rows if str(getattr(t, 'status', '') or '').lower() == 'done')
+    in_progress = sum(1 for t in rows if str(getattr(t, 'status', '') or '').lower() == 'in_progress')
+    todo = sum(1 for t in rows if str(getattr(t, 'status', '') or '').lower() not in {'done', 'in_progress'})
+    lines = [
+        '📈 Сводка прогресса по платформе',
+        f'Тем в системе: {len(rows)}',
+        f'Учеников с прогрессом: {len(students)} • Репетиторов: {len(tutors)}',
+        f'✅ Освоено: {done} • 🔄 В работе: {in_progress} • 📝 Запланировано: {todo}',
+    ]
+    markup = {'inline_keyboard': [[{'text': '📈 Открыть раздел прогресса', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+    _send_telegram(chat_id, '\n'.join(lines), reply_markup=markup)
+
+
+def _telegram_send_homework(chat_id: str, user: User, session: Session) -> None:
+    role = _telegram_role_key(user)
+    if role not in {'student', 'tutor'}:
+        _send_telegram(chat_id, 'Команда /homework сейчас доступна ученику и репетитору.', reply_markup=_telegram_menu_keyboard(user))
+        return
+
+    if role == 'student':
+        rows = session.exec(
+            select(Homework)
+            .where(Homework.student_user_id == user.id)
+            .order_by(Homework.created_at.desc())
+            .limit(50)
+        ).all()
+        active_rows = [h for h in rows if str(getattr(h, 'status', 'assigned') or 'assigned') != 'checked']
+        shown = sorted(
+            active_rows,
+            key=lambda h: (getattr(h, 'due_at', None) is None, getattr(h, 'due_at', None) or getattr(h, 'created_at', None) or datetime.utcnow()),
+        )[:8]
+        learning_url = (_public_app_url() + '/learning') if _public_app_url() else (_dashboard_url(user) or '')
+
+        if not shown:
+            checked = [h for h in rows if str(getattr(h, 'status', 'assigned') or 'assigned') == 'checked'][:3]
+            if checked:
+                lines = ['📚 Активных домашних заданий сейчас нет.', '', 'Последние проверенные:']
+                for h in checked:
+                    due = _as_utc(getattr(h, 'due_at', None)) or getattr(h, 'due_at', None)
+                    due_label = due.strftime('%d.%m %H:%M') if isinstance(due, datetime) else 'без дедлайна'
+                    lines.append(f'• {getattr(h, "title", "Домашка")} — {due_label}')
+                markup = {'inline_keyboard': [[{'text': '📚 Открыть раздел учёбы', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+                _send_telegram(chat_id, '\n'.join(lines), reply_markup=markup)
+                return
+            _send_telegram(chat_id, '📚 Активных домашних заданий сейчас нет.', reply_markup=_telegram_menu_keyboard(user))
+            return
+
+        lines = ['📚 Ваши активные домашние задания', f'Найдено: {len(shown)}', '']
+        now = datetime.utcnow()
+        overdue = 0
+        for idx, h in enumerate(shown, start=1):
+            tutor = session.get(User, int(getattr(h, 'tutor_user_id', 0) or 0))
+            due = _as_utc(getattr(h, 'due_at', None)) or getattr(h, 'due_at', None)
+            due_label = due.strftime('%d.%m %H:%M') if isinstance(due, datetime) else 'без дедлайна'
+            status_label = _telegram_homework_status_label(getattr(h, 'status', 'assigned'))
+            title = str(getattr(h, 'title', 'Домашка') or 'Домашка').strip()
+            desc = str(getattr(h, 'description', '') or '').strip()
+            if isinstance(due, datetime) and due < now:
+                overdue += 1
+            lines.append(f'{idx}. {title}')
+            lines.append(f'   {status_label} • дедлайн: {due_label}')
+            lines.append(f'   👩‍🏫 {_user_label_for_telegram(tutor, session)}')
+            if desc:
+                desc_single = desc.replace('\n', ' ')
+                brief = desc_single[:140]
+                lines.append(f'   {brief}{"…" if len(desc_single) > 140 else ""}')
+            lines.append('')
+        if overdue:
+            lines.insert(2, f'⚠️ Просроченных заданий: {overdue}')
+            lines.insert(3, '')
+        markup = {'inline_keyboard': [[{'text': '📚 Открыть раздел учёбы', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+        _send_telegram(chat_id, '\n'.join(lines).strip(), reply_markup=markup)
+        return
+
+    rows = session.exec(
+        select(Homework)
+        .where(Homework.tutor_user_id == user.id)
+        .order_by(Homework.created_at.desc())
+        .limit(80)
+    ).all()
+    shown = [h for h in rows if str(getattr(h, 'status', 'assigned') or 'assigned') != 'checked'][:8]
+    if not shown:
+        _send_telegram(chat_id, '📚 У ваших учеников сейчас нет активных домашних заданий.', reply_markup=_telegram_menu_keyboard(user))
+        return
+
+    lines = ['📚 Активные домашние задания учеников', f'Найдено: {len(shown)}', '']
+    for idx, h in enumerate(shown, start=1):
+        student = session.get(User, int(getattr(h, 'student_user_id', 0) or 0))
+        due = _as_utc(getattr(h, 'due_at', None)) or getattr(h, 'due_at', None)
+        due_label = due.strftime('%d.%m %H:%M') if isinstance(due, datetime) else 'без дедлайна'
+        status_label = _telegram_homework_status_label(getattr(h, 'status', 'assigned'))
+        title = str(getattr(h, 'title', 'Домашка') or 'Домашка').strip()
+        lines.append(f'{idx}. {title}')
+        lines.append(f'   {status_label} • дедлайн: {due_label}')
+        lines.append(f'   🎓 {_user_label_for_telegram(student, session)}')
+        lines.append('')
+    learning_url = (_public_app_url() + '/learning') if _public_app_url() else (_dashboard_url(user) or '')
+    markup = {'inline_keyboard': [[{'text': '📚 Открыть раздел учёбы', 'url': learning_url}]]} if learning_url else _telegram_menu_keyboard(user)
+    _send_telegram(chat_id, '\n'.join(lines).strip(), reply_markup=markup)
+
+
+
+def _telegram_send_balance(chat_id: str, user: User, session: Session) -> None:
+    role = _telegram_role_key(user)
+    wallet_url = _wallet_url()
+    txs = session.exec(
+        select(BalanceTx).where(BalanceTx.user_id == user.id).order_by(BalanceTx.created_at.desc()).limit(5)
+    ).all()
+
+    if role == 'admin':
+        users = session.exec(select(User)).all()
+        bookings = session.exec(select(Booking)).all()
+        total_student_balance = sum(int(getattr(u, 'balance', 0) or 0) for u in users if _telegram_role_key(u) == 'student')
+        total_tutor_earnings = sum(int(getattr(u, 'earnings', 0) or 0) for u in users if _telegram_role_key(u) == 'tutor')
+        paid_bookings = [b for b in bookings if str(getattr(b, 'payment_status', 'unpaid') or 'unpaid').lower() == 'paid']
+        unpaid_bookings = [b for b in bookings if str(getattr(b, 'payment_status', 'unpaid') or 'unpaid').lower() != 'paid']
+        paid_amount = sum(int(getattr(b, 'price', 0) or 0) for b in paid_bookings)
+        unpaid_amount = sum(int(getattr(b, 'price', 0) or 0) for b in unpaid_bookings)
+        lines = [
+            '💳 Финансовая сводка платформы',
+            f'👛 Балансы учеников: {total_student_balance} ₽',
+            f'💼 Начисления репетиторов: {total_tutor_earnings} ₽',
+            f'✅ Оплачено уроков: {len(paid_bookings)} • сумма {paid_amount} ₽',
+            f'🕒 Не оплачено уроков: {len(unpaid_bookings)} • сумма {unpaid_amount} ₽',
+        ]
+        dash = _dashboard_url(user)
+        buttons = []
+        if dash:
+            buttons.append([{'text': '🎛 Открыть админку', 'url': dash}])
+        if wallet_url:
+            buttons.append([{'text': '💳 Открыть кошелёк', 'url': wallet_url}])
+        _send_telegram(chat_id, '\n'.join(lines), reply_markup={'inline_keyboard': buttons} if buttons else _telegram_menu_keyboard(user))
+        return
+
+    if role == 'tutor':
+        earned = int(getattr(user, 'earnings', 0) or 0)
+        earned_txs = [t for t in txs if str(getattr(t, 'kind', '') or '').lower() in {'earn', 'adjust'}]
+        recent_paid = session.exec(
+            select(Booking).where(Booking.tutor_user_id == user.id).where(Booking.payment_status == 'paid').order_by(Booking.paid_at.desc()).limit(5)
+        ).all()
+        lines = [
+            '💳 Финансы репетитора',
+            f'💼 Ваш доход: {earned} ₽',
+            f'✅ Последних оплаченных уроков: {len(recent_paid)}',
+        ]
+        if earned_txs:
+            lines.append('')
+            lines.append('Последние начисления:')
+            for tx in earned_txs[:5]:
+                created = _as_utc(getattr(tx, 'created_at', None))
+                created_label = created.strftime('%d.%m %H:%M') if created else '—'
+                note = str(getattr(tx, 'note', '') or '').strip()
+                lines.append(f'• +{int(getattr(tx, "amount", 0) or 0)} ₽ · {created_label}{(" · " + note) if note else ""}')
+        else:
+            lines.append('')
+            lines.append('Начислений пока нет.')
+        buttons = []
+        if wallet_url:
+            buttons.append([{'text': '💳 Открыть кошелёк', 'url': wallet_url}])
+        dash = _dashboard_url(user)
+        if dash:
+            buttons.append([{'text': '🏠 Открыть кабинет', 'url': dash}])
+        _send_telegram(chat_id, '\n'.join(lines), reply_markup={'inline_keyboard': buttons} if buttons else _telegram_menu_keyboard(user))
+        return
+
+    balance = int(getattr(user, 'balance', 0) or 0)
+    upcoming = session.exec(
+        select(Booking)
+        .where(Booking.student_user_id == user.id)
+        .where(Booking.payment_status != 'paid')
+        .order_by(Booking.id.desc())
+        .limit(5)
+    ).all()
+    upcoming_sum = sum(int(getattr(b, 'price', 0) or 0) for b in upcoming)
+    lines = [
+        '💳 Ваш баланс DoskoLink',
+        f'👛 Доступно: {balance} ₽',
+        f'🕒 Неоплаченных уроков: {len(upcoming)} • на сумму {upcoming_sum} ₽',
+    ]
+    if txs:
+        lines.append('')
+        lines.append('Последние операции:')
+        for tx in txs[:5]:
+            amount = int(getattr(tx, 'amount', 0) or 0)
+            sign_amount = f'+{amount}' if amount > 0 else str(amount)
+            created = _as_utc(getattr(tx, 'created_at', None))
+            created_label = created.strftime('%d.%m %H:%M') if created else '—'
+            kind = str(getattr(tx, 'kind', '') or '').strip() or 'tx'
+            lines.append(f'• {kind}: {sign_amount} ₽ · {created_label}')
+    else:
+        lines.append('')
+        lines.append('Операций пока нет.')
+    buttons = []
+    if wallet_url:
+        buttons.append([{'text': '💳 Открыть кошелёк', 'url': wallet_url}])
+    dash = _dashboard_url(user)
+    if dash:
+        buttons.append([{'text': '🏠 Открыть кабинет', 'url': dash}])
+    _send_telegram(chat_id, '\n'.join(lines), reply_markup={'inline_keyboard': buttons} if buttons else _telegram_menu_keyboard(user))
+
+
 def _telegram_help_text(role: str) -> str:
     role = _telegram_role_key(role)
     lines = [
@@ -1137,6 +1456,10 @@ def _telegram_help_text(role: str) -> str:
         '/tomorrow — занятия на завтра',
         '/next — ближайшее занятие',
         '/schedule — ближайшие 5 занятий',
+        '/students_today — список ваших учеников на сегодня',
+        '/homework — активные домашние задания',
+        '/progress — прогресс по темам и результатам',
+        '/balance — баланс, оплаты и начисления',
         '/link — открыть кабинет DoskoLink',
         '/support — подсказка и быстрый путь назад в кабинет',
         '/unlink — отвязать Telegram от аккаунта',
@@ -1144,7 +1467,8 @@ def _telegram_help_text(role: str) -> str:
     if role == 'admin':
         lines.extend([
             '/stats — сводка платформы для админа',
-            '🎛 Роль: админ. Бот показывает сводку платформы, ближайшие уроки и Telegram-подключения.',
+            '/balance — финансовая сводка платформы',
+            '🎛 Роль: админ. Бот показывает сводку платформы, ближайшие уроки, Telegram-подключения и финансы.',
         ])
     else:
         lines.extend([
@@ -1153,9 +1477,16 @@ def _telegram_help_text(role: str) -> str:
             '🤖 Используйте и нижнюю клавиатуру, и inline-кнопки под карточками уроков: подтверждение и вход в урок теперь доступны в один тап.',
         ])
         if role == 'tutor':
-            lines.append('🎓 Роль: репетитор. Бот показывает ваших учеников, ближайшие уроки и статусы подтверждения.')
+            lines.append('🎓 Роль: репетитор. Бот показывает ваших учеников, ближайшие уроки, статусы подтверждения и активные домашки.')
+            lines.append('👥 Команда /students_today собирает короткую сводку по ученикам и времени уроков на сегодня.')
+            lines.append('📝 Команда /homework показывает активные домашние задания учеников.')
+            lines.append('📈 Команда /progress показывает сводку по темам и последним обновлениям учеников.')
+            lines.append('💳 Команда /balance показывает ваши начисления и последние выплаты.')
         else:
-            lines.append('📚 Роль: ученик. Бот показывает ваши занятия, репетиторов и статусы подтверждения.')
+            lines.append('📚 Роль: ученик. Бот показывает ваши занятия, репетиторов, статусы подтверждения и активные домашки.')
+            lines.append('📝 Команда /homework покажет активные задания и дедлайны без входа на сайт.')
+            lines.append('📈 Команда /progress покажет темы, статусы и последние комментарии репетитора.')
+            lines.append('💳 Команда /balance покажет доступный баланс, оплаты и последние операции.')
     return '\n'.join(lines)
 
 
@@ -1209,6 +1540,64 @@ def _telegram_send_admin_stats(chat_id: str, session: Session) -> None:
     dash = _dashboard_url(admin_viewer)
     _send_telegram(chat_id, '\n'.join(lines), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]} if dash else None)
 
+
+
+
+def _telegram_send_students_today(chat_id: str, user: User, session: Session) -> None:
+    if _telegram_role_key(user) != 'tutor':
+        _send_telegram(chat_id, 'Команда /students_today доступна только репетитору.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    now = _utcnow()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1) - timedelta(seconds=1)
+    items = _telegram_upcoming_bookings_for_user(user, session, window_start=day_start, window_end=day_end, upcoming_only=False, limit=200)
+    if not items:
+        _send_telegram(chat_id, '👥 Сегодня у вас пока нет занятий с учениками.', reply_markup=_telegram_menu_keyboard(user))
+        return
+
+    grouped: Dict[int, Dict[str, Any]] = {}
+    for booking, slot, _ in items:
+        student = session.get(User, booking.student_user_id)
+        student_id = int(getattr(student, 'id', 0) or 0)
+        start_at = _as_utc(getattr(slot, 'starts_at', None)) or getattr(slot, 'starts_at', None)
+        time_label = start_at.strftime('%H:%M') if isinstance(start_at, datetime) else '—'
+        row = grouped.setdefault(student_id, {
+            'name': _user_label_for_telegram(student, session),
+            'times': [],
+            'confirmed': 0,
+            'pending': 0,
+            'declined': 0,
+            'first': time_label,
+        })
+        row['times'].append(time_label)
+        st = str(getattr(booking, 'student_attendance_status', 'pending') or 'pending')
+        if st == 'confirmed':
+            row['confirmed'] += 1
+        elif st == 'declined':
+            row['declined'] += 1
+        else:
+            row['pending'] += 1
+
+    ordered = sorted(grouped.values(), key=lambda x: min(x['times']) if x['times'] else '99:99')
+    lines = [
+        '👥 Ученики сегодня',
+        f'Всего учеников: {len(ordered)} • уроков: {len(items)}',
+        '',
+    ]
+    for row in ordered:
+        status_bits = []
+        if row['confirmed']:
+            status_bits.append(f'подтв. {row["confirmed"]}')
+        if row['pending']:
+            status_bits.append(f'ждут {row["pending"]}')
+        if row['declined']:
+            status_bits.append(f'не смогут {row["declined"]}')
+        status_suffix = f" • {' / '.join(status_bits)}" if status_bits else ''
+        lines.append(f"• {row['name']} — {', '.join(row['times'])}{status_suffix}")
+
+    dash = _dashboard_url(user)
+    markup = {'inline_keyboard': [[{'text': '🗓 Открыть кабинет', 'url': dash}]]} if dash else _telegram_menu_keyboard(user)
+    _send_telegram(chat_id, '\n'.join(lines), reply_markup=markup)
 
 def _telegram_welcome_text(user: User) -> str:
     role = _telegram_role_label(user)
@@ -1542,6 +1931,10 @@ async def telegram_webhook(
             '📅 сегодня': '/today',
             '⏭ ближайшее': '/next',
             '🗓 расписание': '/schedule',
+            '📚 домашки': '/homework',
+            '📈 прогресс': '/progress',
+            '💳 баланс': '/balance',
+            '👥 ученики сегодня': '/students_today',
             '🧾 кто я': '/whoami',
             '🏠 кабинет': '/link',
             '👋 помощь': '/help',
@@ -1570,6 +1963,14 @@ async def telegram_webhook(
         _telegram_send_next(chat_id, user, session)
     elif command == '/schedule':
         _telegram_send_schedule(chat_id, user, session)
+    elif command == '/students_today':
+        _telegram_send_students_today(chat_id, user, session)
+    elif command == '/homework':
+        _telegram_send_homework(chat_id, user, session)
+    elif command == '/progress':
+        _telegram_send_progress(chat_id, user, session)
+    elif command == '/balance':
+        _telegram_send_balance(chat_id, user, session)
     elif command == '/confirm':
         _telegram_apply_attendance_status(chat_id, user, session, 'confirmed', arg)
     elif command == '/decline':
