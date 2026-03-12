@@ -63,6 +63,8 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
 
   const [tool, setTool] = useState('pen') // pen | eraser | text | image
   const [width, setWidth] = useState(3)
+  const [color, setColor] = useState('#111827')
+  const [showGrid, setShowGrid] = useState(true)
 
   const [pendingImg, setPendingImg] = useState(null) // {dataUrl, aspect}
   const [pendingMode, setPendingMode] = useState('place') // place | background
@@ -223,8 +225,21 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     return tmp.toDataURL('image/png')
   }
 
+  function exportState() {
+    return Array.isArray(historyRef.current) ? JSON.parse(JSON.stringify(historyRef.current)) : []
+  }
+
+  function importState(state) {
+    historyRef.current = Array.isArray(state) ? JSON.parse(JSON.stringify(state)) : []
+    clearBoard(false)
+    setTimeout(() => resizeCanvas(), 0)
+  }
+
   useImperativeHandle(ref, () => ({
     exportPngDataUrl,
+    exportState,
+    importState,
+    getEventCount: () => Array.isArray(historyRef.current) ? historyRef.current.length : 0,
     clear: () => { clearBoard(); send({ type: 'clear' }) }
   }))
 
@@ -262,7 +277,7 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     if (tool === 'text') {
       const t = prompt('Текст на доске:')
       if (t && t.trim()) {
-        const msg = { type: 'text', x: p.x, y: p.y, text: t.trim(), size: 18, color: '#111827' }
+        const msg = { type: 'text', x: p.x, y: p.y, text: t.trim(), size: 18, color }
         drawText(msg)
         historyRef.current.push(msg)
         send(msg)
@@ -312,10 +327,10 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
     if (!drawing.current) return
     const p = pointerToNorm(e)
 
-    const color = tool === 'eraser' ? '#ffffff' : '#111827'
+    const strokeColor = tool === 'eraser' ? '#ffffff' : color
     const w = tool === 'eraser' ? Math.max(10, width * 4) : width
 
-    const seg = { type: 'draw', x0: last.current.x, y0: last.current.y, x1: p.x, y1: p.y, color, w }
+    const seg = { type: 'draw', x0: last.current.x, y0: last.current.y, x1: p.x, y1: p.y, color: strokeColor, w }
     drawLine(seg)
     historyRef.current.push(seg)
     send(seg)
@@ -370,24 +385,37 @@ const Whiteboard = forwardRef(function Whiteboard({ roomId, token }, ref) {
         <button className={`btn ${tool === 'pen' ? 'btnPrimary' : ''}`} onClick={() => { setTool('pen'); setPendingImg(null) }}>Перо</button>
         <button className={`btn ${tool === 'eraser' ? 'btnPrimary' : ''}`} onClick={() => { setTool('eraser'); setPendingImg(null) }}>Ластик</button>
         <button className={`btn ${tool === 'text' ? 'btnPrimary' : ''}`} onClick={() => { setTool('text'); setPendingImg(null) }}>Текст</button>
-
         <button className={`btn ${tool === 'image' ? 'btnPrimary' : ''}`} onClick={() => pickImage('place')}>Фото</button>
         <button className="btn btnGhost" onClick={() => pickImage('background')}>Фон</button>
+        <button className={`btn btnGhost ${showGrid ? 'activeSoft' : ''}`} onClick={() => setShowGrid(v => !v)}>{showGrid ? 'Сетка: вкл' : 'Сетка: выкл'}</button>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
+        <div className="wbPalette">
+          {['#111827', '#2563eb', '#059669', '#d97706', '#dc2626', '#7c3aed'].map((swatch) => (
+            <button
+              key={swatch}
+              type="button"
+              className={`wbColor ${color === swatch ? 'active' : ''}`}
+              style={{ background: swatch }}
+              onClick={() => { setColor(swatch); if (tool === 'eraser') setTool('pen') }}
+              aria-label={`Выбрать цвет ${swatch}`}
+            />
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span className="small">Толщина</span>
           <input type="range" min="1" max="10" value={width} onChange={(e) => setWidth(Number(e.target.value))} />
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          {pendingImg ? <span className="small">Изображение выбрано — кликни по доске</span> : <span className="small"> </span>}
+          {pendingImg ? <span className="small">Изображение выбрано — кликни по доске</span> : <span className="small">Сохраняй доску после ключевых объяснений, чтобы прикрепить её к ДЗ.</span>}
           <button className="btn btnGhost" onClick={() => { clearBoard(); send({ type: 'clear' }) }}>Очистить</button>
         </div>
 
         <input ref={fileRef} style={{ display: 'none' }} type="file" accept="image/*" onChange={onImageSelected} />
       </div>
 
-      <div ref={wrapRef} className="canvasArea" style={{ '--board-height': `${boardHeight}px` }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
+      <div ref={wrapRef} className={`canvasArea ${showGrid ? 'canvasAreaGrid' : ''}`} style={{ '--board-height': `${boardHeight}px` }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
         <canvas ref={canvasRef} className="canvas responsiveCanvas" />
       </div>
     </div>

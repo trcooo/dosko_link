@@ -451,9 +451,9 @@ export default function Admin() {
   if (!me || me.role !== 'admin') return null
 
   return (
-    <div className="adminShell">
-      <div className="adminSidebar card">
-        <div style={{ fontWeight: 900, fontSize: 22 }}>Admin</div>
+    <div className="adminShell productPage adminDesignSet">
+      <div className="adminSidebar card productSidebarCard">
+        <div className="productPageTitle">Admin</div>
         <div className="small">Education Dashboard style (MVP)</div>
         <div className="adminMenu">
           {TABS.map(t => (
@@ -466,15 +466,15 @@ export default function Admin() {
       </div>
 
       <div className="grid" style={{ gap: 12 }}>
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="card productHeroCard">
+          <div className="productHeroTop">
             <div>
-              <div style={{ fontWeight: 900, fontSize: 20 }}>
+              <div className="productPageTitle">
                 {TABS.find(x => x.id === tab)?.title || 'Админка'}
               </div>
               <div className="small">Модерация профилей, документы, жалобы и категории предметов/целей.</div>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="productActionBar">
               <input className="input" style={{ minWidth: 220 }} value={q} onChange={e => setQ(e.target.value)} placeholder="Поиск (email / текст)" />
               <button className="btn" onClick={refreshCurrent} disabled={saving}>Обновить</button>
               <Link className="btn" to="/">На сайт</Link>
@@ -484,7 +484,7 @@ export default function Admin() {
           {tgNotice && <div className="footerNote">{tgNotice}</div>}
         </div>
 
-        <div className="telegramAssistantCard">
+        <div className="telegramAssistantCard productSectionCard">
           <div className="telegramAssistantHeader">
             <div className="telegramAssistantMeta">
               <img className="telegramAvatar" src="/telegram-assistant-avatar.png" alt="DoskoLink Assistant" />
@@ -547,7 +547,19 @@ export default function Admin() {
               <AdminStat label="Отзывы" value={overview.reviews} />
               <AdminStat label="Открытые репорты" value={overview.open_reports} />
             </div>
-            <div className="card">
+            <div className="card" style={{ display: 'grid', gap: 12 }}>
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 18 }}>Attendance / show-rate</div>
+                <div className="small">Простая аналитика по тому, кто вошёл в уроки, где были опоздания и проблемы со связью.</div>
+              </div>
+              <div className="adminStatsGrid">
+                <AdminStat label="Show-rate" value={`${overview.attendance?.participant_show_rate_percent ?? 0}%`} />
+                <AdminStat label="Уроков с обоими" value={overview.attendance?.joined_both ?? 0} />
+                <AdminStat label="Опозданий" value={overview.attendance?.late_entries ?? 0} />
+                <AdminStat label="Не пришли" value={overview.attendance?.lessons_with_absent ?? 0} />
+                <AdminStat label="Слабая сеть" value={overview.attendance?.weak_network_events ?? 0} />
+                <AdminStat label="Audio fallback" value={overview.attendance?.audio_only_events ?? 0} />
+              </div>
               <div className="small">Быстрый запуск MVP:</div>
               <div className="pills" style={{ marginTop: 8 }}>
                 <button className="btn" onClick={() => setTab('moderation')}>Проверить документы репетиторов</button>

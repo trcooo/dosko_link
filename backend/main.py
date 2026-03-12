@@ -11,6 +11,7 @@ import ssl
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,6 +37,7 @@ from db import get_session
 from models import (
     Booking,
     Homework,
+    HomeworkAttachment,
     LessonArtifact,
     LessonMaterial,
     PreLessonCheckin,
@@ -57,6 +59,8 @@ from models import (
     TutorMethodology,
     TutorStudentCRMCard,
     LessonNote,
+    LessonWorkspaceSnapshot,
+    RoomPresenceEvent,
     TutorMessageTemplate,
     WaitlistEntry,
     LastMinuteAlertSubscription,
@@ -67,6 +71,7 @@ from models import (
     NotificationLog,
     ReviewDetail,
     TelegramLinkToken,
+    TelegramHomeworkReviewState,
 )
 
 app = FastAPI(title="DL MVP API", version="0.9.0")
@@ -202,6 +207,131 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _record_room_presence_event(session: Session, booking: Booking, room_id: str, user: User, event_type: str, note: str = "") -> None:
+    try:
+        row = RoomPresenceEvent(
+            booking_id=int(booking.id or 0),
+            room_id=str(room_id),
+            user_id=int(user.id or 0),
+            role=str(getattr(user, 'role', 'student') or 'student'),
+            event_type=str(event_type or 'join')[:40],
+            note=(note or '')[:500],
+        )
+        session.add(row)
+        session.commit()
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+
+
+def _room_attendance_summary(booking: Booking, session: Session) -> Dict[str, Any]:
+    slot = _slot_for_booking(booking, session)
+    starts_at = _as_utc(getattr(slot, 'starts_at', None)) if slot else None
+    now = _utcnow()
+    late_after_min = max(1, int(os.getenv('DL_ROOM_LATE_AFTER_MIN', '5') or '5'))
+    late_after = starts_at + timedelta(minutes=late_after_min) if starts_at else None
+    absent_after = starts_at + timedelta(minutes=max(15, late_after_min + 10)) if starts_at else None
+
+    events = session.exec(
+        select(RoomPresenceEvent)
+        .where(RoomPresenceEvent.booking_id == int(booking.id or 0))
+        .order_by(RoomPresenceEvent.created_at.asc())
+    ).all()
+
+    by_user: Dict[int, List[RoomPresenceEvent]] = {}
+    for e in events:
+        by_user.setdefault(int(getattr(e, 'user_id', 0) or 0), []).append(e)
+
+    def _participant(uid: int, role: str) -> Dict[str, Any]:
+        rows = by_user.get(int(uid), [])
+        joins = [r for r in rows if str(getattr(r, 'event_type', '')) in {'join', 'reconnect'}]
+        first_join = _as_utc(getattr(joins[0], 'created_at', None)) if joins else None
+        weak_count = len([r for r in rows if str(getattr(r, 'event_type', '')) == 'weak_network'])
+        reconnect_count = len([r for r in rows if str(getattr(r, 'event_type', '')) == 'reconnect'])
+        audio_only_count = len([r for r in rows if str(getattr(r, 'event_type', '')) == 'audio_fallback'])
+        if first_join and starts_at:
+            lateness_sec = (first_join - starts_at).total_seconds()
+            lateness_min = max(0, int(round(lateness_sec / 60)))
+        else:
+            lateness_min = None
+
+        status = 'waiting'
+        if first_join:
+            status = 'late' if (late_after and first_join > late_after) else 'on_time'
+        elif absent_after and now >= absent_after:
+            status = 'absent'
+        elif starts_at and now >= starts_at:
+            status = 'not_joined_yet'
+
+        return {
+            'user_id': int(uid),
+            'role': role,
+            'joined': bool(first_join),
+            'first_join_at': first_join,
+            'lateness_min': lateness_min,
+            'status': status,
+            'weak_network_count': weak_count,
+            'reconnect_count': reconnect_count,
+            'audio_only_count': audio_only_count,
+        }
+
+    participants = [
+        _participant(int(booking.tutor_user_id), 'tutor'),
+        _participant(int(booking.student_user_id), 'student'),
+    ]
+    joined_count = sum(1 for p in participants if p['joined'])
+    late_count = sum(1 for p in participants if p['status'] == 'late')
+    absent_count = sum(1 for p in participants if p['status'] == 'absent')
+    weak_count = sum(int(p['weak_network_count']) for p in participants)
+    reconnect_count = sum(int(p['reconnect_count']) for p in participants)
+    audio_only_count = sum(int(p['audio_only_count']) for p in participants)
+    return {
+        'booking_id': int(booking.id or 0),
+        'room_id': f'booking-{int(booking.id or 0)}',
+        'slot_starts_at': starts_at,
+        'participants': participants,
+        'joined_count': joined_count,
+        'show_rate_percent': int(round((joined_count / 2) * 100)),
+        'late_count': late_count,
+        'absent_count': absent_count,
+        'weak_network_count': weak_count,
+        'reconnect_count': reconnect_count,
+        'audio_only_count': audio_only_count,
+        'lesson_started': bool(starts_at and now >= starts_at),
+    }
+
+
+def _admin_attendance_overview(bookings: List[Booking], session: Session) -> Dict[str, Any]:
+    considered = []
+    now = _utcnow()
+    for b in bookings:
+        slot = _slot_for_booking(b, session)
+        starts_at = _as_utc(getattr(slot, 'starts_at', None)) if slot else None
+        if starts_at and starts_at <= now:
+            considered.append(b)
+    summaries = [_room_attendance_summary(b, session) for b in considered]
+    both_joined = sum(1 for s in summaries if s['joined_count'] >= 2)
+    any_absent = sum(1 for s in summaries if s['absent_count'] > 0)
+    total_late = sum(int(s['late_count']) for s in summaries)
+    weak = sum(int(s['weak_network_count']) for s in summaries)
+    reconnects = sum(int(s['reconnect_count']) for s in summaries)
+    audio_only = sum(int(s['audio_only_count']) for s in summaries)
+    participant_total = max(1, len(summaries) * 2)
+    joined_total = sum(int(s['joined_count']) for s in summaries)
+    return {
+        'tracked_lessons': len(summaries),
+        'joined_both': both_joined,
+        'lessons_with_absent': any_absent,
+        'late_entries': total_late,
+        'participant_show_rate_percent': int(round((joined_total / participant_total) * 100)),
+        'weak_network_events': weak,
+        'reconnect_events': reconnects,
+        'audio_only_events': audio_only,
+    }
+
+
 def _smtp_cfg() -> Dict[str, Any]:
     return {
         "host": os.getenv("DL_SMTP_HOST"),
@@ -303,6 +433,71 @@ def _telegram_api_call(method: str, payload: Dict[str, Any]) -> None:
             resp.read()
     except Exception as e:
         print(f"[telegram/{method}/error] {e}")
+
+
+def _telegram_api_call_multipart(method: str, fields: Dict[str, Any], files: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    token = str(os.getenv("DL_TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        return {}
+    boundary = f"----DoskoLink{uuid.uuid4().hex}"
+    body = io.BytesIO()
+
+    def _write(chunk: bytes) -> None:
+        body.write(chunk)
+
+    for key, value in (fields or {}).items():
+        _write(f"--{boundary}\r\n".encode("utf-8"))
+        _write(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+        _write(str(value if value is not None else "").encode("utf-8"))
+        _write(b"\r\n")
+
+    for key, meta in (files or {}).items():
+        filename = str((meta or {}).get("filename") or "file")
+        mime = str((meta or {}).get("mime") or "application/octet-stream")
+        data = (meta or {}).get("data") or b""
+        if not isinstance(data, (bytes, bytearray)):
+            data = bytes(data)
+        _write(f"--{boundary}\r\n".encode("utf-8"))
+        _write(f'Content-Disposition: form-data; name="{key}"; filename="{filename}"\r\n'.encode("utf-8"))
+        _write(f"Content-Type: {mime}\r\n\r\n".encode("utf-8"))
+        _write(data)
+        _write(b"\r\n")
+
+    _write(f"--{boundary}--\r\n".encode("utf-8"))
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    req = urllib.request.Request(
+        url,
+        data=body.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8") or "{}"
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[telegram/{method}/multipart_error] {e}")
+        return {}
+
+
+def _telegram_send_binary_attachment(chat_id: str, filename: str, data: bytes, mime: str = '', caption: str = '') -> None:
+    if not chat_id or not data:
+        return
+    mime = str(mime or 'application/octet-stream')
+    filename = str(filename or 'file')[:180]
+    caption = str(caption or '')[:900]
+    is_image = mime.lower().startswith('image/')
+    method = 'sendPhoto' if is_image else 'sendDocument'
+    file_key = 'photo' if is_image else 'document'
+    fields: Dict[str, Any] = {"chat_id": str(chat_id)}
+    if caption:
+        fields["caption"] = caption
+    _telegram_api_call_multipart(method, fields, {
+        file_key: {
+            "filename": filename,
+            "mime": mime,
+            "data": data,
+        }
+    })
 
 
 def _send_telegram(chat_id: str, text_body: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
@@ -826,6 +1021,28 @@ def _wallet_url() -> str:
     return f"{app_url}/wallet"
 
 
+def _learning_url(tab: str = 'homework', booking_id: Optional[int] = None) -> str:
+    app_url = _public_app_url()
+    if not app_url:
+        return ''
+    params = {}
+    if tab:
+        params['tab'] = str(tab).strip()
+    if booking_id:
+        params['booking'] = int(booking_id)
+    query = urllib.parse.urlencode(params)
+    return f"{app_url}/learning{('?' + query) if query else ''}"
+
+
+def _reschedule_url(booking_id: int, viewer: Optional[User] = None) -> str:
+    app_url = _public_app_url()
+    if not app_url:
+        return ''
+    role = _telegram_role_key(viewer) if viewer is not None else 'student'
+    path = '/admin' if role == 'admin' else '/dashboard'
+    return f"{app_url}{path}?reschedule={int(booking_id)}"
+
+
 def _telegram_link_token_ttl_minutes() -> int:
     return max(5, int(os.getenv('DL_TELEGRAM_LINK_TTL_MIN', '30') or '30'))
 
@@ -1021,14 +1238,20 @@ def _telegram_main_keyboard_for_booking(booking_id: int, viewer: Optional[User] 
     role = _telegram_role_key(viewer) if viewer else 'student'
     if role in {'student', 'tutor'}:
         buttons.append([
-            {'text': '✅ Подтверждаю', 'callback_data': _telegram_callback_data('confirm', booking_id)},
-            {'text': '❌ Не смогу', 'callback_data': _telegram_callback_data('decline', booking_id)},
+            {'text': '✅ Подтвердить участие', 'callback_data': _telegram_callback_data('confirm', booking_id)},
+            {'text': '🕒 Запросить перенос', 'url': _reschedule_url(booking_id, viewer)},
         ])
     room_url = _room_url_for_booking(booking_id)
+    homework_url = _learning_url('homework', booking_id)
+    row2: List[Dict[str, str]] = []
     if room_url:
-        buttons.append([{'text': '🔗 Открыть занятие', 'url': room_url}])
+        row2.append({'text': '🔗 Открыть урок', 'url': room_url})
+    if homework_url and role in {'student', 'tutor'}:
+        row2.append({'text': '📚 Отправить ДЗ', 'url': homework_url})
+    if row2:
+        buttons.append(row2)
     dash = _dashboard_url(viewer)
-    if dash:
+    if dash and role == 'admin':
         buttons.append([{'text': '🏠 Открыть кабинет', 'url': dash}])
     if not buttons:
         return None
@@ -1045,7 +1268,8 @@ def _telegram_menu_keyboard(role_or_user: Any) -> Dict[str, Any]:
     ]
     if role == 'tutor':
         keyboard.insert(1, [{'text': '👥 Ученики сегодня'}])
-        keyboard.insert(2, [{'text': '📚 Домашки'}, {'text': '📈 Прогресс'}])
+        keyboard.insert(2, [{'text': '📚 Домашки'}, {'text': '📥 Входящие ДЗ'}])
+        keyboard.insert(3, [{'text': '📈 Прогресс'}, {'text': '💳 Баланс'}])
         keyboard.insert(4, [{'text': '✅ Подтвердить'}, {'text': '⚠️ Не смогу'}])
     elif role == 'student':
         keyboard.insert(2, [{'text': '📚 Домашки'}, {'text': '📈 Прогресс'}])
@@ -1258,6 +1482,203 @@ def _telegram_send_progress(chat_id: str, user: User, session: Session) -> None:
     _send_telegram(chat_id, '\n'.join(lines), reply_markup=markup)
 
 
+
+def _telegram_homework_review_state(session: Session, tutor_user_id: int) -> Optional[TelegramHomeworkReviewState]:
+    return session.exec(
+        select(TelegramHomeworkReviewState)
+        .where(TelegramHomeworkReviewState.tutor_user_id == int(tutor_user_id))
+        .where(TelegramHomeworkReviewState.is_active == True)
+        .order_by(TelegramHomeworkReviewState.updated_at.desc())
+    ).first()
+
+
+def _telegram_homework_review_buttons(homework_id: int) -> Dict[str, Any]:
+    return {
+        'inline_keyboard': [
+            [
+                {'text': '📎 Файлы', 'callback_data': f'hw:files:{int(homework_id)}'},
+                {'text': '✅ Проверено', 'callback_data': f'hw:check:{int(homework_id)}'},
+            ],
+            [
+                {'text': '🛠 Нужно доработать', 'callback_data': f'hw:revise:{int(homework_id)}'},
+            ],
+        ]
+    }
+
+
+def _telegram_homework_submission_attachments(session: Session, homework_id: int) -> List[HomeworkAttachment]:
+    return session.exec(
+        select(HomeworkAttachment)
+        .where(HomeworkAttachment.homework_id == int(homework_id))
+        .where(HomeworkAttachment.role == 'submission')
+        .order_by(HomeworkAttachment.created_at.asc())
+    ).all()
+
+
+def _telegram_send_homework_files(chat_id: str, h: Homework, session: Session, attachments: Optional[List[HomeworkAttachment]] = None) -> int:
+    attachments = attachments if attachments is not None else _telegram_homework_submission_attachments(session, int(h.id or 0))
+    if not attachments:
+        _send_telegram(chat_id, f'📎 У ДЗ #{h.id} «{getattr(h, "title", "Домашка")}» пока нет прикреплённых файлов.')
+        return 0
+    student = session.get(User, int(getattr(h, 'student_user_id', 0) or 0))
+    total = len(attachments)
+    sent = 0
+    for idx, att in enumerate(attachments, start=1):
+        caption_lines = [f'📎 ДЗ #{h.id}: {getattr(h, "title", "Домашка")}']
+        if idx == 1:
+            caption_lines.append(f'🎓 Ученик: {_user_label_for_telegram(student, session)}')
+        caption_lines.append(f'Файл {idx}/{total}: {getattr(att, "name", "file")}')
+        _telegram_send_binary_attachment(
+            chat_id,
+            filename=str(getattr(att, 'name', 'file') or 'file'),
+            data=getattr(att, 'data', b'') or b'',
+            mime=str(getattr(att, 'mime', '') or 'application/octet-stream'),
+            caption='\n'.join(caption_lines),
+        )
+        sent += 1
+    return sent
+
+
+def _telegram_notify_tutor_homework_update(session: Session, h: Homework, headline: str, attachment: Optional[HomeworkAttachment] = None) -> None:
+    tutor = session.get(User, int(getattr(h, 'tutor_user_id', 0) or 0))
+    tutor_chat_id = str(getattr(tutor, 'telegram_chat_id', '') or '').strip() if tutor else ''
+    if not tutor_chat_id:
+        return
+    _send_telegram(tutor_chat_id, headline, reply_markup=_telegram_homework_review_buttons(int(h.id or 0)))
+    _send_telegram(tutor_chat_id, _telegram_homework_inbox_card_text(h, session), reply_markup=_telegram_homework_review_buttons(int(h.id or 0)))
+    if attachment:
+        _telegram_send_homework_files(tutor_chat_id, h, session, attachments=[attachment])
+    else:
+        _telegram_send_homework_files(tutor_chat_id, h, session)
+
+
+def _telegram_homework_inbox_card_text(h: Homework, session: Session) -> str:
+    student = session.get(User, int(getattr(h, 'student_user_id', 0) or 0))
+    attachments = session.exec(select(HomeworkAttachment).where(HomeworkAttachment.homework_id == int(h.id or 0))).all()
+    submission_files = [a for a in attachments if str(getattr(a, 'role', 'resource') or 'resource') == 'submission']
+    submitted_at = _as_utc(getattr(h, 'submitted_at', None)) or getattr(h, 'submitted_at', None)
+    submitted_label = submitted_at.strftime('%d.%m %H:%M') if isinstance(submitted_at, datetime) else 'без времени'
+    lines = [
+        f'📥 Домашнее задание #{h.id}',
+        f'🎓 Ученик: {_user_label_for_telegram(student, session)}',
+        f'📚 {getattr(h, "title", "Домашка")}',
+        f'🕒 Отправлено: {submitted_label}',
+    ]
+    submission_text = str(getattr(h, 'submission_text', '') or '').strip()
+    if submission_text:
+        one_line = submission_text.replace('\n', ' ')
+        lines.append(f'💬 Ответ: {one_line[:220]}{"…" if len(one_line) > 220 else ""}')
+    if submission_files:
+        lines.append(f'📎 Файлов: {len(submission_files)}')
+    if getattr(h, 'feedback_text', None):
+        fb = str(getattr(h, 'feedback_text', '') or '').strip().replace('\n', ' ')
+        if fb:
+            lines.append(f'📝 Последний фидбек: {fb[:180]}{"…" if len(fb) > 180 else ""}')
+    lines.append('')
+    lines.append('Нажмите кнопку ниже, затем отправьте текстовый фидбек одним сообщением. Можно также отправить /skip.')
+    return '\n'.join(lines)
+
+
+def _telegram_send_homework_inbox(chat_id: str, user: User, session: Session) -> None:
+    if _telegram_role_key(user) not in {'tutor', 'admin'}:
+        _send_telegram(chat_id, 'Команда /homework_inbox доступна только репетитору и админу.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    stmt = select(Homework).where(Homework.status == 'submitted').order_by(Homework.submitted_at.desc(), Homework.created_at.desc()).limit(8)
+    if _telegram_role_key(user) == 'tutor':
+        stmt = stmt.where(Homework.tutor_user_id == user.id)
+    rows = session.exec(stmt).all()
+    if not rows:
+        _send_telegram(chat_id, '📥 Во входящих домашних заданиях пока пусто.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    _send_telegram(chat_id, f'📥 Входящие домашние задания: {len(rows)}', reply_markup=_telegram_menu_keyboard(user))
+    for h in rows:
+        _send_telegram(chat_id, _telegram_homework_inbox_card_text(h, session), reply_markup=_telegram_homework_review_buttons(int(h.id or 0)))
+        _telegram_send_homework_files(chat_id, h, session)
+
+
+def _telegram_begin_homework_review(chat_id: str, user: User, session: Session, homework_id: int, action: str) -> None:
+    if _telegram_role_key(user) not in {'tutor', 'admin'}:
+        _send_telegram(chat_id, 'Это действие доступно только репетитору.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    h = session.get(Homework, int(homework_id))
+    if not h:
+        _send_telegram(chat_id, 'Домашнее задание не найдено.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    if _telegram_role_key(user) == 'tutor' and int(getattr(h, 'tutor_user_id', 0) or 0) != int(user.id):
+        _send_telegram(chat_id, 'Это ДЗ не относится к вашему аккаунту.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    existing = session.exec(select(TelegramHomeworkReviewState).where(TelegramHomeworkReviewState.tutor_user_id == int(user.id)).where(TelegramHomeworkReviewState.is_active == True)).all()
+    for row in existing:
+        row.is_active = False
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+    state = TelegramHomeworkReviewState(tutor_user_id=int(user.id), homework_id=int(homework_id), action='checked' if action == 'check' else 'revise')
+    session.add(state)
+    session.commit()
+    verb = 'Проверено' if action == 'check' else 'Нужно доработать'
+    _send_telegram(chat_id, f'Вы выбрали: {verb} для ДЗ #{h.id} «{getattr(h, "title", "Домашка")}».\n\nТеперь отправьте текстовый фидбек одним сообщением.\nМожно также отправить /skip, чтобы отправить статус без текста.', reply_markup={'remove_keyboard': True})
+
+
+def _telegram_finish_homework_review(chat_id: str, user: User, session: Session, feedback_text: str = '', skip_text: bool = False) -> None:
+    state = _telegram_homework_review_state(session, user.id)
+    if not state:
+        _send_telegram(chat_id, 'Сейчас нет активной проверки ДЗ.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    h = session.get(Homework, int(getattr(state, 'homework_id', 0) or 0))
+    if not h:
+        state.is_active = False
+        state.updated_at = datetime.utcnow()
+        session.add(state)
+        session.commit()
+        _send_telegram(chat_id, 'Домашнее задание не найдено.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    action = str(getattr(state, 'action', 'checked') or 'checked')
+    final_feedback = '' if skip_text else str(feedback_text or '').strip()
+    if final_feedback:
+        h.feedback_text = final_feedback
+    elif not str(getattr(h, 'feedback_text', '') or '').strip():
+        h.feedback_text = 'Проверка завершена.' if action == 'checked' else 'Нужно доработать домашнее задание.'
+    if action == 'checked':
+        h.status = 'checked'
+        h.checked_at = datetime.utcnow()
+    else:
+        h.status = 'assigned'
+        h.checked_at = None
+    session.add(h)
+    state.is_active = False
+    state.updated_at = datetime.utcnow()
+    session.add(state)
+    session.commit()
+    session.refresh(h)
+
+    student = session.get(User, int(getattr(h, 'student_user_id', 0) or 0))
+    student_text = [
+        f'📚 Обновление по ДЗ #{h.id}: {getattr(h, "title", "Домашка")}',
+        '✅ Репетитор отметил: Проверено' if action == 'checked' else '🛠 Репетитор отметил: Нужно доработать',
+    ]
+    fb = str(getattr(h, 'feedback_text', '') or '').strip()
+    if fb:
+        student_text.extend(['', '💬 Фидбек репетитора:', fb])
+    learning_url = _learning_url('homework', getattr(h, 'booking_id', None))
+    student_markup = {'inline_keyboard': [[{'text': '📚 Открыть домашки', 'url': learning_url}]]} if learning_url else None
+    if student and getattr(student, 'notify_telegram', False) and getattr(student, 'telegram_chat_id', None):
+        _send_telegram(str(getattr(student, 'telegram_chat_id', '') or ''), '\n'.join(student_text), reply_markup=student_markup)
+
+    tutor_done = '✅ Статус «Проверено» отправлен ученику.' if action == 'checked' else '🛠 Статус «Нужно доработать» отправлен ученику.'
+    _send_telegram(chat_id, tutor_done, reply_markup=_telegram_menu_keyboard(user))
+
+
+def _telegram_cancel_homework_review(chat_id: str, user: User, session: Session) -> None:
+    state = _telegram_homework_review_state(session, user.id)
+    if not state:
+        _send_telegram(chat_id, 'Активной проверки ДЗ нет.', reply_markup=_telegram_menu_keyboard(user))
+        return
+    state.is_active = False
+    state.updated_at = datetime.utcnow()
+    session.add(state)
+    session.commit()
+    _send_telegram(chat_id, 'Проверка ДЗ отменена.', reply_markup=_telegram_menu_keyboard(user))
+
 def _telegram_send_homework(chat_id: str, user: User, session: Session) -> None:
     role = _telegram_role_key(user)
     if role not in {'student', 'tutor'}:
@@ -1458,11 +1879,13 @@ def _telegram_help_text(role: str) -> str:
         '/schedule — ближайшие 5 занятий',
         '/students_today — список ваших учеников на сегодня',
         '/homework — активные домашние задания',
+        '/homework_inbox — входящие ДЗ для проверки',
         '/progress — прогресс по темам и результатам',
         '/balance — баланс, оплаты и начисления',
         '/link — открыть кабинет DoskoLink',
         '/support — подсказка и быстрый путь назад в кабинет',
         '/unlink — отвязать Telegram от аккаунта',
+        '/cancel_review — отменить текущую проверку ДЗ',
     ]
     if role == 'admin':
         lines.extend([
@@ -1474,7 +1897,7 @@ def _telegram_help_text(role: str) -> str:
         lines.extend([
             '/confirm — подтвердить участие в ближайшем уроке',
             '/decline — отметить, что вы не сможете прийти',
-            '🤖 Используйте и нижнюю клавиатуру, и inline-кнопки под карточками уроков: подтверждение и вход в урок теперь доступны в один тап.',
+            '🤖 Используйте и нижнюю клавиатуру, и inline-кнопки под карточками уроков: подтверждение, вход в урок, переход к ДЗ и быстрый запрос переноса доступны в один тап.',
         ])
         if role == 'tutor':
             lines.append('🎓 Роль: репетитор. Бот показывает ваших учеников, ближайшие уроки, статусы подтверждения и активные домашки.')
@@ -1859,6 +2282,28 @@ async def telegram_webhook(
                 _telegram_answer_callback(callback_id, 'Статус обновлён.')
                 return {'ok': True}
 
+            hw_files_cb = re.match(r'^hw:files:(\d+)$', data)
+            if hw_files_cb:
+                homework_id = int(hw_files_cb.group(1))
+                h = session.get(Homework, homework_id)
+                if not h:
+                    _telegram_answer_callback(callback_id, 'ДЗ не найдено', show_alert=True)
+                    return {'ok': True}
+                if _telegram_role_key(user) == 'tutor' and int(getattr(h, 'tutor_user_id', 0) or 0) != int(user.id):
+                    _telegram_answer_callback(callback_id, 'Это ДЗ не относится к вашему аккаунту', show_alert=True)
+                    return {'ok': True}
+                _telegram_send_homework_files(chat_id, h, session)
+                _telegram_answer_callback(callback_id, 'Файлы отправлены в чат')
+                return {'ok': True}
+
+            hw_cb = re.match(r'^hw:(check|revise):(\d+)$', data)
+            if hw_cb:
+                action = str(hw_cb.group(1) or '').strip()
+                homework_id = int(hw_cb.group(2))
+                _telegram_begin_homework_review(chat_id, user, session, homework_id, action)
+                _telegram_answer_callback(callback_id, 'Жду текстовый фидбек')
+                return {'ok': True}
+
             if data == 'menu:help':
                 _send_telegram(chat_id, _telegram_help_text(_telegram_role_key(user)), reply_markup=_telegram_menu_keyboard(user))
                 _telegram_answer_callback(callback_id, 'Открываю помощь')
@@ -1926,12 +2371,25 @@ async def telegram_webhook(
             session.add(user)
             session.commit()
 
+    review_state = _telegram_homework_review_state(session, user.id) if user else None
+    if user and review_state:
+        if command == '/skip':
+            _telegram_finish_homework_review(chat_id, user, session, skip_text=True)
+            return {'ok': True}
+        if command == '/cancel_review':
+            _telegram_cancel_homework_review(chat_id, user, session)
+            return {'ok': True}
+        if text and not command:
+            _telegram_finish_homework_review(chat_id, user, session, feedback_text=text, skip_text=False)
+            return {'ok': True}
+
     if not command and text:
         quick_map = {
             '📅 сегодня': '/today',
             '⏭ ближайшее': '/next',
             '🗓 расписание': '/schedule',
             '📚 домашки': '/homework',
+            '📥 входящие дз': '/homework_inbox',
             '📈 прогресс': '/progress',
             '💳 баланс': '/balance',
             '👥 ученики сегодня': '/students_today',
@@ -1967,6 +2425,8 @@ async def telegram_webhook(
         _telegram_send_students_today(chat_id, user, session)
     elif command == '/homework':
         _telegram_send_homework(chat_id, user, session)
+    elif command == '/homework_inbox':
+        _telegram_send_homework_inbox(chat_id, user, session)
     elif command == '/progress':
         _telegram_send_progress(chat_id, user, session)
     elif command == '/balance':
@@ -1989,6 +2449,8 @@ async def telegram_webhook(
         _telegram_send_link(chat_id, user)
     elif command == '/unlink':
         _telegram_unlink(chat_id, user, session)
+    elif command == '/cancel_review':
+        _telegram_cancel_homework_review(chat_id, user, session)
     else:
         _send_telegram(chat_id, _telegram_help_text(_telegram_role_key(user)), reply_markup=_telegram_menu_keyboard(user))
 
@@ -2340,6 +2802,7 @@ def admin_overview(
     by_status = {"confirmed": 0, "cancelled": 0, "done": 0}
     for b in bookings:
         by_status[b.status] = by_status.get(b.status, 0) + 1
+    attendance = _admin_attendance_overview(bookings, session)
 
     return {
         "users": len(users),
@@ -2362,6 +2825,7 @@ def admin_overview(
         "quizzes": len(quizzes),
         "quiz_questions": len(quiz_questions),
         "quiz_attempts": len(quiz_attempts),
+        "attendance": attendance,
     }
 # -----------------
 # Admin: bookings / reviews / reports
@@ -3803,6 +4267,7 @@ class RoomInfoOut(BaseModel):
     tutor_email_masked: str
     student_email_masked: str
     tutor_payment_method: str = ""
+    attendance_summary: Dict[str, Any] = {}
 
 
 @app.get("/api/rooms/{room_id}", response_model=RoomInfoOut)
@@ -3824,7 +4289,41 @@ def room_info(
         tutor_email_masked=_mask_email(tutor.email if tutor else ""),
         student_email_masked=_mask_email(student.email if student else ""),
         tutor_payment_method=pay,
+        attendance_summary=_room_attendance_summary(booking, session),
     )
+
+
+@app.get("/api/bookings/{booking_id}/room-attendance")
+def room_attendance_summary(
+    booking_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    booking = session.get(Booking, booking_id)
+    if not booking:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(booking, user)
+    return _room_attendance_summary(booking, session)
+
+
+class RoomQualityEventIn(BaseModel):
+    event_type: str = 'weak_network'
+    note: str = ''
+
+
+@app.post("/api/rooms/{room_id}/quality-event")
+def report_room_quality_event(
+    room_id: str,
+    payload: RoomQualityEventIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    booking = _require_room_access(room_id, user, session)
+    event_type = str(payload.event_type or 'weak_network').strip().lower()
+    if event_type not in {'weak_network', 'reconnect', 'audio_fallback', 'join', 'leave'}:
+        raise HTTPException(400, 'unsupported event type')
+    _record_room_presence_event(session, booking, room_id, user, event_type, payload.note or '')
+    return {'ok': True, 'attendance': _room_attendance_summary(booking, session)}
 
 
 # -----------------
@@ -4255,11 +4754,56 @@ class HomeworkOut(BaseModel):
     feedback_text: str
     checked_at: Optional[datetime]
     created_at: datetime
+    attachment_count: int = 0
+    resource_count: int = 0
+    submission_attachment_count: int = 0
+
+
+class HomeworkAttachmentOut(BaseModel):
+    id: int
+    homework_id: int
+    uploader_user_id: int
+    uploader_hint: str
+    title: str
+    role: str
+    name: str
+    mime: str
+    size_bytes: int
+    created_at: datetime
+
+
+def _homework_access_ok(h: Homework, user: User) -> bool:
+    if user.role == 'admin':
+        return True
+    if user.role == 'tutor':
+        return h.tutor_user_id == user.id
+    if user.role == 'student':
+        return h.student_user_id == user.id
+    return False
+
+
+def _hw_attachment_to_out(a: HomeworkAttachment, session: Session) -> HomeworkAttachmentOut:
+    uploader = session.get(User, a.uploader_user_id)
+    return HomeworkAttachmentOut(
+        id=a.id,
+        homework_id=a.homework_id,
+        uploader_user_id=a.uploader_user_id,
+        uploader_hint=_mask_email(uploader.email if uploader else ''),
+        title=a.title or a.name or 'Файл',
+        role=a.role or 'resource',
+        name=a.name,
+        mime=a.mime,
+        size_bytes=a.size_bytes,
+        created_at=a.created_at,
+    )
 
 
 def _hw_to_out(h: Homework, session: Session) -> HomeworkOut:
     tutor = session.get(User, h.tutor_user_id)
     student = session.get(User, h.student_user_id)
+    attachments = session.exec(select(HomeworkAttachment).where(HomeworkAttachment.homework_id == h.id)).all()
+    resource_count = len([a for a in attachments if getattr(a, 'role', 'resource') == 'resource'])
+    submission_attachment_count = len([a for a in attachments if getattr(a, 'role', 'resource') == 'submission'])
     return HomeworkOut(
         id=h.id,
         tutor_user_id=h.tutor_user_id,
@@ -4276,6 +4820,9 @@ def _hw_to_out(h: Homework, session: Session) -> HomeworkOut:
         feedback_text=h.feedback_text,
         checked_at=h.checked_at,
         created_at=h.created_at,
+        attachment_count=len(attachments),
+        resource_count=resource_count,
+        submission_attachment_count=submission_attachment_count,
     )
 
 
@@ -4362,6 +4909,11 @@ def submit_homework(
     session.add(h)
     session.commit()
     session.refresh(h)
+    _telegram_notify_tutor_homework_update(
+        session,
+        h,
+        headline=f'📥 У вас новое домашнее задание от ученика: {getattr(h, "title", "Домашка")}',
+    )
     return _hw_to_out(h, session)
 
 
@@ -4388,6 +4940,107 @@ def check_homework(
     session.commit()
     session.refresh(h)
     return _hw_to_out(h, session)
+
+
+@app.get("/api/homework/{homework_id}/attachments", response_model=List[HomeworkAttachmentOut])
+def list_homework_attachments(
+    homework_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    h = session.get(Homework, homework_id)
+    if not h:
+        raise HTTPException(404, "homework not found")
+    if not _homework_access_ok(h, user):
+        raise HTTPException(403, "no access")
+    rows = session.exec(
+        select(HomeworkAttachment)
+        .where(HomeworkAttachment.homework_id == homework_id)
+        .order_by(HomeworkAttachment.created_at.desc())
+    ).all()
+    return [_hw_attachment_to_out(a, session) for a in rows]
+
+
+@app.post("/api/homework/{homework_id}/attachments", response_model=List[HomeworkAttachmentOut])
+def upload_homework_attachment(
+    homework_id: int,
+    file: UploadFile = File(...),
+    role: str = 'resource',
+    title: str = '',
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    h = session.get(Homework, homework_id)
+    if not h:
+        raise HTTPException(404, "homework not found")
+    if not _homework_access_ok(h, user):
+        raise HTTPException(403, "no access")
+
+    role = (role or 'resource').strip().lower()
+    allowed_roles = {'resource', 'submission', 'feedback'}
+    if role not in allowed_roles:
+        raise HTTPException(400, 'bad role')
+
+    if user.role == 'student' and role not in {'submission'}:
+        role = 'submission'
+    if user.role == 'tutor' and role == 'submission':
+        role = 'resource'
+
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(400, 'empty file')
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, 'file too large (max 10MB)')
+
+    safe_title = (title or '').strip()[:180]
+    att = HomeworkAttachment(
+        homework_id=homework_id,
+        uploader_user_id=user.id,
+        title=safe_title,
+        role=role,
+        name=(file.filename or 'file')[:200],
+        mime=(file.content_type or 'application/octet-stream')[:120],
+        size_bytes=len(raw),
+        data=raw,
+    )
+    session.add(att)
+    session.commit()
+    session.refresh(att)
+    if role == 'submission' and str(getattr(h, 'status', '') or '') == 'submitted':
+        _telegram_notify_tutor_homework_update(
+            session,
+            h,
+            headline=f'📎 Ученик добавил файл к ДЗ: {getattr(h, "title", "Домашка")}',
+            attachment=att,
+        )
+
+    rows = session.exec(
+        select(HomeworkAttachment)
+        .where(HomeworkAttachment.homework_id == homework_id)
+        .order_by(HomeworkAttachment.created_at.desc())
+    ).all()
+    return [_hw_attachment_to_out(a, session) for a in rows]
+
+
+@app.get('/api/homework/attachments/{attachment_id}')
+def download_homework_attachment(
+    attachment_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    att = session.get(HomeworkAttachment, attachment_id)
+    if not att:
+        raise HTTPException(404, 'attachment not found')
+    h = session.get(Homework, att.homework_id)
+    if not h:
+        raise HTTPException(404, 'homework not found')
+    if not _homework_access_ok(h, user):
+        raise HTTPException(403, 'no access')
+    return Response(
+        content=att.data or b'',
+        media_type=att.mime or 'application/octet-stream',
+        headers={'Content-Disposition': f'attachment; filename="{urllib.parse.quote(att.name or "file")}"'}
+    )
 
 
 # -----------------
@@ -5736,12 +6389,14 @@ async def ws_room(ws: WebSocket, channel: str, room_id: str):
 
         # Room access control (important for production even in MVP)
         try:
-            _require_room_access(room_id, user, session)
+            booking = _require_room_access(room_id, user, session)
         except HTTPException:
             await ws.close(code=4403)
             return
 
         await manager.connect(channel, room_id, ws)
+        if channel == "signaling":
+            _record_room_presence_event(session, booking, room_id, user, 'join')
 
         try:
             await manager.broadcast(channel, room_id, {"type": "peer-joined", "userId": user.id}, sender=ws)
@@ -5758,9 +6413,13 @@ async def ws_room(ws: WebSocket, channel: str, room_id: str):
                 await manager.broadcast(channel, room_id, msg, sender=ws)
         except WebSocketDisconnect:
             manager.disconnect(channel, room_id, ws)
+            if channel == "signaling":
+                _record_room_presence_event(session, booking, room_id, user, 'leave')
             await manager.broadcast(channel, room_id, {"type": "peer-left", "userId": user.id}, sender=ws)
         except Exception:
             manager.disconnect(channel, room_id, ws)
+            if channel == "signaling":
+                _record_room_presence_event(session, booking, room_id, user, 'leave', 'exception')
             try:
                 await ws.close(code=1011)
             except Exception:
@@ -6618,6 +7277,8 @@ def upsert_crm_card(
 
 class LessonNoteIn(BaseModel):
     lesson_summary: str = ""
+    covered_topics: str = ""
+    repeat_topics: str = ""
     weak_topics: List[str] = []
     homework_assigned: str = ""
     homework_checked: str = ""
@@ -6639,6 +7300,8 @@ def get_lesson_notes(
         "id": n.id,
         "booking_id": n.booking_id,
         "lesson_summary": n.lesson_summary,
+        "covered_topics": str(getattr(n, 'covered_topics', '') or '') or str(getattr(n, 'lesson_summary', '') or ''),
+        "repeat_topics": str(getattr(n, 'repeat_topics', '') or '') or str(getattr(n, 'homework_checked', '') or ''),
         "weak_topics": _loads_list(getattr(n, 'weak_topics_json', '[]')),
         "homework_assigned": n.homework_assigned,
         "homework_checked": n.homework_checked,
@@ -6663,6 +7326,8 @@ def create_or_update_lesson_note(
     if not n:
         n = LessonNote(booking_id=booking_id, tutor_user_id=b.tutor_user_id, student_user_id=b.student_user_id)
     n.lesson_summary = (payload.lesson_summary or '')[:4000]
+    n.covered_topics = ((payload.covered_topics or payload.lesson_summary or ''))[:4000]
+    n.repeat_topics = ((payload.repeat_topics or payload.homework_checked or ''))[:4000]
     n.weak_topics_json = json.dumps([str(x).strip() for x in (payload.weak_topics or []) if str(x).strip()][:50], ensure_ascii=False)
     n.homework_assigned = (payload.homework_assigned or '')[:4000]
     n.homework_checked = (payload.homework_checked or '')[:4000]
@@ -6686,6 +7351,173 @@ def create_or_update_lesson_note(
         "tutor_comment_for_parent": n.tutor_comment_for_parent,
         "updated_at": n.updated_at,
     }}
+
+
+class LessonWorkspaceSaveIn(BaseModel):
+    snapshot_kind: str = "autosave"
+    whiteboard_state: List[Dict[str, Any]] = []
+    lesson_summary: str = ""
+    covered_topics: str = ""
+    repeat_topics: str = ""
+    weak_topics: List[str] = []
+    homework_assigned: str = ""
+    homework_checked: str = ""
+    tutor_comment_for_parent: str = ""
+
+
+def _lesson_note_to_dict(n: Optional[LessonNote]) -> Dict[str, Any]:
+    if not n:
+        return {
+            "lesson_summary": "",
+            "covered_topics": "",
+            "repeat_topics": "",
+            "weak_topics": [],
+            "homework_assigned": "",
+            "homework_checked": "",
+            "tutor_comment_for_parent": "",
+            "updated_at": None,
+        }
+    covered_topics = str(getattr(n, 'covered_topics', '') or '')
+    repeat_topics = str(getattr(n, 'repeat_topics', '') or '')
+    return {
+        "lesson_summary": n.lesson_summary,
+        "covered_topics": covered_topics or str(getattr(n, 'lesson_summary', '') or ''),
+        "repeat_topics": repeat_topics or str(getattr(n, 'homework_checked', '') or ''),
+        "weak_topics": _loads_list(getattr(n, 'weak_topics_json', '[]')),
+        "homework_assigned": n.homework_assigned,
+        "homework_checked": n.homework_checked,
+        "tutor_comment_for_parent": n.tutor_comment_for_parent,
+        "updated_at": n.updated_at,
+    }
+
+
+def _lesson_snapshot_to_out(row: LessonWorkspaceSnapshot, include_state: bool = False) -> Dict[str, Any]:
+    item = {
+        "id": int(row.id or 0),
+        "booking_id": int(row.booking_id),
+        "author_user_id": int(row.author_user_id),
+        "snapshot_kind": str(getattr(row, 'snapshot_kind', 'autosave') or 'autosave'),
+        "whiteboard_events_count": int(getattr(row, 'whiteboard_events_count', 0) or 0),
+        "lesson_summary": str(getattr(row, 'lesson_summary', '') or ''),
+        "covered_topics": str(getattr(row, 'covered_topics', '') or '') or str(getattr(row, 'lesson_summary', '') or ''),
+        "repeat_topics": str(getattr(row, 'repeat_topics', '') or '') or str(getattr(row, 'homework_checked', '') or ''),
+        "weak_topics": _loads_list(getattr(row, 'weak_topics_json', '[]')),
+        "homework_assigned": str(getattr(row, 'homework_assigned', '') or ''),
+        "homework_checked": str(getattr(row, 'homework_checked', '') or ''),
+        "tutor_comment_for_parent": str(getattr(row, 'tutor_comment_for_parent', '') or ''),
+        "created_at": getattr(row, 'created_at', None),
+    }
+    if include_state:
+        try:
+            item["whiteboard_state"] = json.loads(getattr(row, 'whiteboard_state_json', '[]') or '[]')
+        except Exception:
+            item["whiteboard_state"] = []
+    return item
+
+
+@app.get('/api/bookings/{booking_id}/lesson-workspace')
+def get_lesson_workspace(
+    booking_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(b, user)
+    note = session.exec(select(LessonNote).where(LessonNote.booking_id == booking_id).order_by(LessonNote.updated_at.desc())).first()
+    rows = session.exec(select(LessonWorkspaceSnapshot).where(LessonWorkspaceSnapshot.booking_id == booking_id).order_by(LessonWorkspaceSnapshot.created_at.desc())).all()
+    latest = rows[0] if rows else None
+    autosave_sec = max(10, min(300, int(os.getenv('DL_ROOM_AUTOSAVE_SEC', '30') or '30')))
+    return {
+        "autosave_interval_sec": autosave_sec,
+        "note": _lesson_note_to_dict(note),
+        "latest_snapshot": _lesson_snapshot_to_out(latest, include_state=True) if latest else None,
+        "snapshots": [_lesson_snapshot_to_out(r, include_state=False) for r in rows[:20]],
+    }
+
+
+@app.get('/api/lesson-workspace-snapshots/{snapshot_id}')
+def get_lesson_workspace_snapshot(
+    snapshot_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    row = session.get(LessonWorkspaceSnapshot, snapshot_id)
+    if not row:
+        raise HTTPException(404, 'snapshot not found')
+    b = session.get(Booking, int(row.booking_id))
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(b, user)
+    return {"item": _lesson_snapshot_to_out(row, include_state=True)}
+
+
+@app.post('/api/bookings/{booking_id}/lesson-workspace/autosave')
+def save_lesson_workspace(
+    booking_id: int,
+    payload: LessonWorkspaceSaveIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    b = session.get(Booking, booking_id)
+    if not b:
+        raise HTTPException(404, 'booking not found')
+    _ensure_participant(b, user)
+
+    kind = str(payload.snapshot_kind or 'autosave').strip().lower()
+    if kind not in {'autosave', 'manual', 'final'}:
+        kind = 'autosave'
+
+    state = payload.whiteboard_state or []
+    if not isinstance(state, list):
+        state = []
+    state = state[:5000]
+    whiteboard_state_json = json.dumps(state, ensure_ascii=False)
+    weak_topics = [str(x).strip() for x in (payload.weak_topics or []) if str(x).strip()][:50]
+
+    row = LessonWorkspaceSnapshot(
+        booking_id=booking_id,
+        author_user_id=int(user.id or 0),
+        snapshot_kind=kind,
+        whiteboard_state_json=whiteboard_state_json,
+        whiteboard_events_count=len(state),
+        lesson_summary=(payload.lesson_summary or '')[:4000],
+        covered_topics=((payload.covered_topics or payload.lesson_summary or ''))[:4000],
+        repeat_topics=((payload.repeat_topics or payload.homework_checked or ''))[:4000],
+        weak_topics_json=json.dumps(weak_topics, ensure_ascii=False),
+        homework_assigned=(payload.homework_assigned or '')[:4000],
+        homework_checked=(payload.homework_checked or '')[:4000],
+        tutor_comment_for_parent=(payload.tutor_comment_for_parent or '')[:2000],
+    )
+    session.add(row)
+
+    note = session.exec(select(LessonNote).where(LessonNote.booking_id == booking_id).order_by(LessonNote.updated_at.desc())).first()
+    if user.role in {'tutor', 'admin'}:
+        if not note:
+            note = LessonNote(booking_id=booking_id, tutor_user_id=b.tutor_user_id, student_user_id=b.student_user_id)
+        note.lesson_summary = (payload.lesson_summary or '')[:4000]
+        note.covered_topics = ((payload.covered_topics or payload.lesson_summary or ''))[:4000]
+        note.repeat_topics = ((payload.repeat_topics or payload.homework_checked or ''))[:4000]
+        note.weak_topics_json = json.dumps(weak_topics, ensure_ascii=False)
+        note.homework_assigned = (payload.homework_assigned or '')[:4000]
+        note.homework_checked = (payload.homework_checked or '')[:4000]
+        note.tutor_comment_for_parent = (payload.tutor_comment_for_parent or '')[:2000]
+        note.updated_at = datetime.utcnow()
+        session.add(note)
+        if note.tutor_comment_for_parent:
+            m = _get_or_create_booking_meta(session, booking_id)
+            m.tutor_comment = note.tutor_comment_for_parent
+            m.updated_at = datetime.utcnow()
+            session.add(m)
+
+    session.commit()
+    session.refresh(row)
+    return {
+        "ok": True,
+        "snapshot": _lesson_snapshot_to_out(row, include_state=False),
+        "note": _lesson_note_to_dict(note),
+    }
 
 
 class TemplateIn(BaseModel):

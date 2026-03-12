@@ -191,6 +191,19 @@ class Homework(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class HomeworkAttachment(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    homework_id: int = Field(index=True)
+    uploader_user_id: int = Field(index=True)
+    title: str = Field(default="")
+    role: str = Field(default="resource", index=True)  # resource | submission | feedback
+    name: str = Field(default="file")
+    mime: str = Field(default="application/octet-stream")
+    size_bytes: int = Field(default=0)
+    data: bytes = Field(default=b"")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class TopicProgress(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     tutor_user_id: int = Field(index=True)
@@ -409,12 +422,42 @@ class LessonNote(SQLModel, table=True):
     tutor_user_id: int = Field(index=True)
     student_user_id: int = Field(index=True)
     lesson_summary: str = Field(default="")
+    covered_topics: str = Field(default="")
+    repeat_topics: str = Field(default="")
     weak_topics_json: str = Field(default="[]")
     homework_assigned: str = Field(default="")
     homework_checked: str = Field(default="")
     tutor_comment_for_parent: str = Field(default="")
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class LessonWorkspaceSnapshot(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    booking_id: int = Field(index=True)
+    author_user_id: int = Field(index=True)
+    snapshot_kind: str = Field(default="autosave", index=True)  # autosave | manual | final
+    whiteboard_state_json: str = Field(default="[]")
+    whiteboard_events_count: int = Field(default=0)
+    lesson_summary: str = Field(default="")
+    covered_topics: str = Field(default="")
+    repeat_topics: str = Field(default="")
+    weak_topics_json: str = Field(default="[]")
+    homework_assigned: str = Field(default="")
+    homework_checked: str = Field(default="")
+    tutor_comment_for_parent: str = Field(default="")
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RoomPresenceEvent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    booking_id: int = Field(index=True)
+    room_id: str = Field(index=True)
+    user_id: int = Field(index=True)
+    role: str = Field(default="student", index=True)
+    event_type: str = Field(default="join", index=True)  # join | leave | weak_network | reconnect | audio_fallback
+    note: str = Field(default="")
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
 class TutorMessageTemplate(SQLModel, table=True):
@@ -497,6 +540,16 @@ class BookingMeta(SQLModel, table=True):
     tutor_comment: str = Field(default="")
     tutor_comment_sent_at: Optional[datetime] = Field(default=None, index=True)
     recurring_series_id: Optional[int] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class TelegramHomeworkReviewState(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tutor_user_id: int = Field(index=True)
+    homework_id: int = Field(index=True)
+    action: str = Field(default="checked", index=True)  # checked | revise
+    is_active: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 

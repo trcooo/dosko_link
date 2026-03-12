@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import { apiFetch, apiUpload, apiUrl } from '../api'
 
@@ -11,6 +11,7 @@ function fmt(dt) {
 export default function Learning() {
   const { me, token, loading: authLoading } = useAuth()
   const nav = useNavigate()
+  const location = useLocation()
 
   const [tab, setTab] = useState('homework')
   const [err, setErr] = useState('')
@@ -18,6 +19,7 @@ export default function Learning() {
 
   const [students, setStudents] = useState([])
   const [homework, setHomework] = useState([])
+  const [homeworkFilter, setHomeworkFilter] = useState('all')
   const [progress, setProgress] = useState([])
   const [materials, setMaterials] = useState([])
 
@@ -95,6 +97,14 @@ export default function Learning() {
   }, [authLoading, me, nav])
 
   const isTutor = me?.role === 'tutor'
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const requestedTab = String(params.get('tab') || '').trim()
+    if (requestedTab && ['homework', 'progress', 'materials', 'plan', 'library', 'quizzes'].includes(requestedTab)) {
+      setTab(requestedTab)
+    }
+  }, [location.search])
 
   async function loadBase() {
     if (!token || !me) return
@@ -506,6 +516,19 @@ export default function Learning() {
     return (students || []).map(s => ({ value: String(s.id), label: `${s.hint} (#${s.id})` }))
   }, [students])
 
+  const homeworkStats = useMemo(() => ({
+    total: homework.length,
+    assigned: homework.filter((h) => h.status === 'assigned').length,
+    submitted: homework.filter((h) => h.status === 'submitted').length,
+    checked: homework.filter((h) => h.status === 'checked').length,
+    attachments: homework.reduce((acc, h) => acc + Number(h.attachment_count || 0), 0),
+  }), [homework])
+
+  const filteredHomework = useMemo(() => {
+    if (homeworkFilter === 'all') return homework
+    return homework.filter((h) => h.status === homeworkFilter)
+  }, [homework, homeworkFilter])
+
   async function createHw() {
     if (!hwStudentId || !hwTitle.trim()) return
     setBusy(true)
@@ -767,7 +790,26 @@ export default function Learning() {
       {tab === 'homework' && (
         <div className="card">
           <div style={{ fontWeight: 900, fontSize: 18 }}>Домашка</div>
-          <div className="sub">В MVP — текстовая сдача и проверка. Файлы можно прикреплять в комнате урока (Материалы занятия).</div>
+          <div className="sub">Теперь задания можно сдавать не только текстом: прикрепляй PDF, фото решения, архивы и шаблоны файлов прямо внутри карточки ДЗ.</div>
+
+          <div className="lessonHeroStats" style={{ marginTop: 12 }}>
+            <div className="lessonStatCard">
+              <div className="small">Всего заданий</div>
+              <div className="lessonStatValue">{homeworkStats.total}</div>
+            </div>
+            <div className="lessonStatCard warn">
+              <div className="small">Нужно сделать</div>
+              <div className="lessonStatValue">{homeworkStats.assigned}</div>
+            </div>
+            <div className="lessonStatCard">
+              <div className="small">На проверке</div>
+              <div className="lessonStatValue">{homeworkStats.submitted}</div>
+            </div>
+            <div className="lessonStatCard ok">
+              <div className="small">Проверено</div>
+              <div className="lessonStatValue">{homeworkStats.checked}</div>
+            </div>
+          </div>
 
           {isTutor && (
             <div className="card" style={{ marginTop: 10 }}>
@@ -788,19 +830,33 @@ export default function Learning() {
               <input className="input" value={hwTitle} onChange={(e) => setHwTitle(e.target.value)} placeholder="Например: Уравнения — 10 задач" />
               <div className="label">Описание</div>
               <textarea className="textarea" value={hwDesc} onChange={(e) => setHwDesc(e.target.value)} placeholder="Что сделать, как оформить, на что обратить внимание…" />
+              <div className="footerNote">После создания можно сразу открыть карточку задания и прикрепить файл-шаблон, скрин, PDF или пример решения.</div>
               <button className="btn btnPrimary" onClick={createHw} disabled={busy || studentOptions.length === 0}>
                 {busy ? 'Сохраняем…' : 'Выдать'}
               </button>
             </div>
           )}
 
+          <div className="lessonControlsRow" style={{ marginTop: 12 }}>
+            <div>
+              <div className="label">Фильтр</div>
+              <select className="select" value={homeworkFilter} onChange={(e) => setHomeworkFilter(e.target.value)}>
+                <option value="all">Все</option>
+                <option value="assigned">assigned</option>
+                <option value="submitted">submitted</option>
+                <option value="checked">checked</option>
+              </select>
+            </div>
+            <div className="lessonStatusChip">Файлов в ДЗ: {homeworkStats.attachments}</div>
+          </div>
+
           <div className="label" style={{ marginTop: 12 }}>Список</div>
-          {homework.length === 0 ? (
+          {filteredHomework.length === 0 ? (
             <div className="small">Пока нет заданий.</div>
           ) : (
             <div className="grid" style={{ gap: 10 }}>
-              {homework.map(h => (
-                <HomeworkCard key={h.id} h={h} me={me} onSubmit={submitHw} onCheck={checkHw} busy={busy} />
+              {filteredHomework.map(h => (
+                <HomeworkCard key={h.id} h={h} me={me} token={token} onSubmit={submitHw} onCheck={checkHw} busy={busy} />
               ))}
             </div>
           )}
@@ -1249,23 +1305,124 @@ export default function Learning() {
   )
 }
 
-function HomeworkCard({ h, me, onSubmit, onCheck, busy }) {
+function HomeworkCard({ h, me, token, onSubmit, onCheck, busy }) {
   const isTutor = me?.role === 'tutor'
   const [submission, setSubmission] = useState(h.submission_text || '')
   const [feedback, setFeedback] = useState(h.feedback_text || '')
+  const [attachments, setAttachments] = useState([])
+  const [attachmentPreviews, setAttachmentPreviews] = useState({})
+  const [loadingAttachments, setLoadingAttachments] = useState(false)
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [attachmentTitle, setAttachmentTitle] = useState('')
+  const [attachmentFile, setAttachmentFile] = useState(null)
 
   const canSubmit = !isTutor && (h.status === 'assigned' || h.status === 'submitted')
   const canCheck = isTutor && (h.status === 'submitted' || h.status === 'assigned')
 
+  async function loadAttachments() {
+    if (!token) return
+    setLoadingAttachments(true)
+    try {
+      const rows = await apiFetch(`/api/homework/${h.id}/attachments`, { token })
+      setAttachments(Array.isArray(rows) ? rows : [])
+    } catch {
+      setAttachments([])
+    } finally {
+      setLoadingAttachments(false)
+    }
+  }
+
+  useEffect(() => {
+    loadAttachments()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [h.id, token])
+  useEffect(() => {
+    let cancelled = false
+    const created = []
+
+    async function loadPreviews() {
+      const next = {}
+      for (const att of attachments) {
+        const mime = String(att?.mime || '')
+        if (!(mime.startsWith('image/') || mime === 'application/pdf')) continue
+        try {
+          const res = await fetch(apiUrl(`/api/homework/attachments/${att.id}`), {
+            headers: { Authorization: `Bearer ${token}` },
+            credentials: 'include'
+          })
+          if (!res.ok) continue
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          created.push(url)
+          next[att.id] = url
+        } catch {
+          // ignore preview error
+        }
+      }
+      if (!cancelled) setAttachmentPreviews(next)
+    }
+
+    loadPreviews()
+    return () => {
+      cancelled = true
+      created.forEach((u) => URL.revokeObjectURL(u))
+    }
+  }, [attachments, token])
+
+  async function uploadAttachment(role) {
+    if (!attachmentFile) return
+    setUploadingAttachment(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', attachmentFile)
+      if (attachmentTitle.trim()) fd.append('title', attachmentTitle.trim())
+      const rows = await apiUpload(`/api/homework/${h.id}/attachments?role=${encodeURIComponent(role)}`, { token, formData: fd })
+      setAttachments(Array.isArray(rows) ? rows : [])
+      setAttachmentTitle('')
+      setAttachmentFile(null)
+    } catch (e) {
+      alert(e.message || 'Не удалось загрузить файл')
+    } finally {
+      setUploadingAttachment(false)
+    }
+  }
+
+  async function downloadAttachment(att) {
+    try {
+      const res = await fetch(apiUrl(`/api/homework/attachments/${att.id}`), {
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include'
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = att.name || `homework-${att.id}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert(e.message || 'Не удалось скачать файл')
+    }
+  }
+
+  const uploadRole = isTutor ? (h.status === 'checked' ? 'feedback' : 'resource') : 'submission'
+  const uploadButtonLabel = isTutor ? (h.status === 'checked' ? 'Прикрепить файл проверки' : 'Прикрепить файл к заданию') : 'Прикрепить решение файлом'
+
   return (
-    <div className="card">
+    <div className="card homeworkCard">
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontWeight: 900 }}>{h.title}</div>
           <div className="small">#{h.id} • статус: <b>{h.status}</b> • создано: {fmt(h.created_at)}{h.due_at ? ` • дедлайн: ${fmt(h.due_at)}` : ''}</div>
           <div className="small">репетитор: {h.tutor_hint} • ученик: {h.student_hint}</div>
         </div>
-        {h.booking_id && <div className="small">booking: #{h.booking_id}</div>}
+        <div className="homeworkMetaWrap">
+          {h.booking_id && <div className="small">booking: #{h.booking_id}</div>}
+          <div className="lessonStatusChip">Файлов: {attachments.length || h.attachment_count || 0}</div>
+        </div>
       </div>
 
       {h.description && (
@@ -1296,6 +1453,63 @@ function HomeworkCard({ h, me, onSubmit, onCheck, busy }) {
             </button>
           )}
         </div>
+      </div>
+
+      <div className="homeworkAttachmentBox">
+        <div className="panelTitle">
+          <div>
+            <div style={{ fontWeight: 800 }}>Файлы по заданию</div>
+            <div className="small">Шаблоны, решения, скрины, PDF и комментарии по проверке.</div>
+          </div>
+          <button className="btn btnGhost" onClick={loadAttachments} disabled={loadingAttachments}>
+            {loadingAttachments ? 'Обновляем…' : 'Обновить'}
+          </button>
+        </div>
+
+        <div className="row" style={{ gap: 10, alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <div className="label">Подпись к файлу</div>
+            <input className="input" value={attachmentTitle} onChange={(e) => setAttachmentTitle(e.target.value)} placeholder="Например: шаблон решения / скрин работы" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div className="label">Файл</div>
+            <input className="input" type="file" onChange={(e) => setAttachmentFile(e.target.files?.[0] || null)} />
+          </div>
+          <button className="btn" onClick={() => uploadAttachment(uploadRole)} disabled={uploadingAttachment || !attachmentFile}>
+            {uploadingAttachment ? 'Загружаем…' : uploadButtonLabel}
+          </button>
+        </div>
+
+        {attachments.length === 0 ? (
+          <div className="small" style={{ marginTop: 10 }}>Файлов пока нет.</div>
+        ) : (
+          <div className="homeworkAttachmentGallery">
+            {attachments.map((att) => {
+              const mime = String(att.mime || '')
+              const preview = attachmentPreviews[att.id]
+              return (
+                <div key={att.id} className="homeworkAttachmentCard">
+                  <div className="homeworkAttachmentPreview">
+                    {mime.startsWith('image/') && preview ? (
+                      <img src={preview} alt={att.title || att.name} />
+                    ) : mime === 'application/pdf' && preview ? (
+                      <iframe title={`att-${att.id}`} src={preview} />
+                    ) : (
+                      <div className="homeworkAttachmentFallback">{mime === 'application/pdf' ? 'PDF' : 'FILE'}</div>
+                    )}
+                  </div>
+                  <button className="homeworkAttachmentItem" onClick={() => downloadAttachment(att)}>
+                    <div>
+                      <div style={{ fontWeight: 800 }}>{att.title || att.name}</div>
+                      <div className="small">{att.role} • {Math.round((att.size_bytes || 0) / 1024)} KB • {fmt(att.created_at)}</div>
+                    </div>
+                    <div className="small">Скачать</div>
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )

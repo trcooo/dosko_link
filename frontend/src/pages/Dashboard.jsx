@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import { apiFetch, changePassword } from '../api'
 import ReviewModal from '../components/ReviewModal'
@@ -345,6 +345,7 @@ function LessonsCalendarCard({ bookings, role, settings, balanceInfo }) {
 export default function Dashboard() {
   const { me, token, loading: authLoading, logout, balanceInfo, payBooking, refreshBalance } = useAuth()
   const nav = useNavigate()
+  const location = useLocation()
 
   const [profile, setProfile] = useState(null)
   const [bookings, setBookings] = useState([])
@@ -491,6 +492,24 @@ export default function Dashboard() {
   }
 
   useEffect(() => { load() }, [token, me])
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const raw = String(params.get('reschedule') || '').trim()
+    if (!raw || !bookings.length) return
+    const bookingId = Number(raw)
+    if (!Number.isFinite(bookingId) || bookingId <= 0) return
+    const found = bookings.find((item) => Number(item.id) === bookingId)
+    if (!found) return
+    setRescheduleBooking(found)
+  }, [location.search, bookings])
+
+  function clearRescheduleQuery() {
+    const params = new URLSearchParams(location.search)
+    if (!params.get('reschedule')) return
+    params.delete('reschedule')
+    nav({ pathname: location.pathname, search: params.toString() ? `?${params.toString()}` : '' }, { replace: true })
+  }
 
   useEffect(() => {
     if (!profile) return
@@ -854,16 +873,16 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
   if (!me) return null
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
-      <div className="card roleHeaderCard">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+    <div className="grid productPage dashboardDesignSet" style={{ gap: 16 }}>
+      <div className="card roleHeaderCard productHeroCard">
+        <div className="productHeroTop">
           <div>
-            <div style={{ fontWeight: 900, fontSize: 22 }}>{roleTitle(me.role)}</div>
+            <div className="productPageTitle">{roleTitle(me.role)}</div>
             <div className="small">{me.email} • роль: {me.role}</div>
             {me.role === 'tutor' && <div className="sub" style={{ marginTop: 6 }}>Заполни профиль → отправь на модерацию → после одобрения профиль появится в выдаче.</div>}
             {me.role === 'student' && <div className="sub" style={{ marginTop: 6 }}>Управляй бронями, комнатами уроков, оплатой и отзывами в одном месте.</div>}
           </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div className="productActionBar">
             <button className="btn" onClick={load}>Обновить</button>
             {me.role === 'tutor' ? (
               <Link className="btn btnPrimary" to="/">Открыть маркетплейс</Link>
@@ -1332,12 +1351,12 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
                     </div>
 
                     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <Link className="btn btnPrimary" to={`/room/${b.room_id}`}>Открыть комнату</Link>
+                      <Link className="btn btnPrimary" to={`/room/${b.room_id}`}>Открыть урок</Link>
+                      <Link className="btn" to={`/learning?tab=homework&booking=${b.id}`}>Отправить ДЗ</Link>
 
                       {!isCancelled && !isDone && (me.role === 'student' || me.role === 'tutor') && (
                         <>
-                          <button className="btn" onClick={() => setAttendanceStatus(b.id, 'confirmed')} disabled={saving}>Подтверждаю</button>
-                          <button className="btn" onClick={() => setAttendanceStatus(b.id, 'declined', me.role === 'student' ? 'Не могу сегодня' : 'Нужно перенести / не смогу провести')} disabled={saving}>Не подтверждаю</button>
+                          <button className="btn" onClick={() => setAttendanceStatus(b.id, 'confirmed')} disabled={saving}>Подтвердить участие</button>
                         </>
                       )}
 
@@ -1347,8 +1366,8 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
 
                       {!isCancelled && !isDone && (
                         <>
+                          <button className="btn" onClick={() => setRescheduleBooking(b)} disabled={saving}>Запросить перенос</button>
                           <button className="btn" onClick={() => cancelBooking(b.id)} disabled={saving}>Отменить</button>
-                          <button className="btn" onClick={() => setRescheduleBooking(b)} disabled={saving}>Перенести</button>
                           {(me.role === 'tutor' || me.role === 'admin') && <button className="btn" onClick={() => completeBooking(b.id)} disabled={saving}>Завершить</button>}
                         </>
                       )}
@@ -1385,8 +1404,8 @@ CTA: ${f?.cta?.primary || 'Купить пакет'}`)
         open={Boolean(rescheduleBooking)}
         booking={rescheduleBooking}
         token={token}
-        onClose={() => setRescheduleBooking(null)}
-        onSubmitted={() => load()}
+        onClose={() => { setRescheduleBooking(null); clearRescheduleQuery() }}
+        onSubmitted={() => { setRescheduleBooking(null); clearRescheduleQuery(); load() }}
       />
     </div>
   )

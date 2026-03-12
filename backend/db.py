@@ -86,6 +86,13 @@ def _ensure_schema() -> None:
         _exec('ALTER TABLE tutorprofile ADD COLUMN lessons_count INTEGER DEFAULT 0')
         _exec('ALTER TABLE tutorprofile ADD COLUMN founding_tutor BOOLEAN DEFAULT 0')
 
+        _exec("ALTER TABLE homeworkattachment ADD COLUMN title VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE homeworkattachment ADD COLUMN role VARCHAR DEFAULT 'resource'")
+        _exec("ALTER TABLE lessonnote ADD COLUMN covered_topics VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE lessonnote ADD COLUMN repeat_topics VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE lessonworkspacesnapshot ADD COLUMN covered_topics VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE lessonworkspacesnapshot ADD COLUMN repeat_topics VARCHAR DEFAULT ''")
+
     elif dialect.startswith("postgres"):
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR')
         _exec('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS telegram_username VARCHAR')
@@ -131,6 +138,13 @@ def _ensure_schema() -> None:
         _exec("ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS public_schedule_note VARCHAR DEFAULT ''")
         _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS lessons_count INTEGER DEFAULT 0')
         _exec('ALTER TABLE tutorprofile ADD COLUMN IF NOT EXISTS founding_tutor BOOLEAN DEFAULT FALSE')
+
+        _exec("ALTER TABLE homeworkattachment ADD COLUMN IF NOT EXISTS title VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE homeworkattachment ADD COLUMN IF NOT EXISTS role VARCHAR DEFAULT 'resource'")
+        _exec("ALTER TABLE lessonnote ADD COLUMN IF NOT EXISTS covered_topics VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE lessonnote ADD COLUMN IF NOT EXISTS repeat_topics VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE lessonworkspacesnapshot ADD COLUMN IF NOT EXISTS covered_topics VARCHAR DEFAULT ''")
+        _exec("ALTER TABLE lessonworkspacesnapshot ADD COLUMN IF NOT EXISTS repeat_topics VARCHAR DEFAULT ''")
 
 
 def get_session():

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Link, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth.jsx'
 
 import Home from './pages/Home'
@@ -26,14 +26,16 @@ function NavBar() {
   }, [location.pathname])
 
   const closeMenu = () => setMobileOpen(false)
+  const navBtnClass = ({ isActive }) => `btn btnGhost navLinkBtn${isActive ? ' isActive' : ''}`
 
   return (
     <div className="nav">
-      <div className="navInner">
+      <div className="navInner navSurface">
         <Link to="/" className="brand" aria-label="DoskoLink — главная" onClick={closeMenu}>
           <img className="brandLogo" src="/doskolink-logo.png" alt="DoskoLink" />
           <div className="brandMeta">
             <div className="small">Платформа для репетиторов</div>
+            <div className="navBrandSub">Уроки, ДЗ, Telegram и аналитика в одном продукте</div>
           </div>
         </Link>
 
@@ -50,27 +52,30 @@ function NavBar() {
         </button>
 
         <div className={`navLinks ${mobileOpen ? 'open' : ''}`}>
-          <Link className="btn btnGhost" to="/" onClick={closeMenu}>{me?.role === 'tutor' ? 'Маркетплейс' : 'Поиск'}</Link>
-          {me && me.role !== 'admin' && <Link className="btn btnGhost" to="/dashboard" onClick={closeMenu}>{me.role === 'tutor' ? 'Кабинет репетитора' : 'Кабинет ученика'}</Link>}
-          {me && me.role === 'admin' && <Link className="btn btnGhost" to="/admin" onClick={closeMenu}>Админ-панель</Link>}
-          {me && me.role !== 'admin' && <Link className="btn btnGhost" to="/learning" onClick={closeMenu}>{me.role === 'tutor' ? 'Ученики / обучение' : 'Учёба'}</Link>}
-          {me && me.role !== 'admin' && (
-            <Link className="btn btnGhost" to="/wallet" onClick={closeMenu}>
-              {me.role === 'tutor' ? 'Доходы' : 'Баланс'}
-              <span className="pill" style={{ marginLeft: 8 }}>{bal} ₽</span>
-              {me.role === 'tutor' ? <span className="pill" style={{ marginLeft: 6, opacity: .85 }}>+{earn} ₽</span> : null}
-            </Link>
-          )}
+          <div className="navLinksInner">
+            <NavLink end className={navBtnClass} to="/" onClick={closeMenu}>{me?.role === 'tutor' ? 'Маркетплейс' : 'Поиск'}</NavLink>
+            {me && me.role !== 'admin' && <NavLink className={navBtnClass} to="/dashboard" onClick={closeMenu}>{me.role === 'tutor' ? 'Кабинет репетитора' : 'Кабинет ученика'}</NavLink>}
+            {me && me.role === 'admin' && <NavLink className={navBtnClass} to="/admin" onClick={closeMenu}>Админ-панель</NavLink>}
+            {me && me.role !== 'admin' && <NavLink className={navBtnClass} to="/learning" onClick={closeMenu}>{me.role === 'tutor' ? 'Ученики / обучение' : 'Учёба'}</NavLink>}
+            {me && me.role !== 'admin' && (
+              <NavLink className={navBtnClass} to="/wallet" onClick={closeMenu}>
+                {me.role === 'tutor' ? 'Доходы' : 'Баланс'}
+                <span className="pill navPill" style={{ marginLeft: 8 }}>{bal} ₽</span>
+                {me.role === 'tutor' ? <span className="pill navPill navPillSoft" style={{ marginLeft: 6, opacity: .9 }}>+{earn} ₽</span> : null}
+              </NavLink>
+            )}
+          </div>
           {!me ? (
-            <>
+            <div className="navAuthActions">
               <Link className="btn" to="/login" onClick={closeMenu}>Войти</Link>
               <Link className="btn btnPrimary" to="/register" onClick={closeMenu}>Регистрация</Link>
-            </>
+            </div>
           ) : (
-            <>
-              <div className="small navIdentity">{me.email} • {me.role}</div>
+            <div className="navProfileCard">
+              <div className="small navIdentity">{me.email}</div>
+              <div className="pill pillSoft">{me.role}</div>
               <button className="btn" onClick={() => { closeMenu(); logout(); nav('/') }}>Выйти</button>
-            </>
+            </div>
           )}
         </div>
       </div>
@@ -82,7 +87,7 @@ export default function App() {
   return (
     <AuthProvider>
       <NavBar />
-      <div className="container">
+      <div className="container pageShell">
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
