@@ -13,7 +13,7 @@ function mediaLabel(list, value, fallback) {
   return found?.label || fallback
 }
 
-export default function VideoCall({ roomId, token }) {
+export default function VideoCall({ roomId, token, observerMode = false }) {
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
   const pcRef = useRef(null)
@@ -29,10 +29,12 @@ export default function VideoCall({ roomId, token }) {
   const lastWeakReportAtRef = useRef(0)
   const reconnectLockedRef = useRef(false)
   const manualCloseRef = useRef(false)
+  const observerModeRef = useRef(observerMode)
+  const transceiversRef = useRef({ audio: null, video: null })
 
-  const [status, setStatus] = useState('Инициализация…')
-  const [micOn, setMicOn] = useState(true)
-  const [camOn, setCamOn] = useState(true)
+  const [status, setStatus] = useState(observerMode ? 'Режим наблюдения…' : 'Инициализация…')
+  const [micOn, setMicOn] = useState(false)
+  const [camOn, setCamOn] = useState(false)
   const [micLevel, setMicLevel] = useState(0)
   const [connectionQuality, setConnectionQuality] = useState('Ожидание')
   const [cameraDevices, setCameraDevices] = useState([])
@@ -53,6 +55,10 @@ export default function VideoCall({ roomId, token }) {
   useEffect(() => {
     audioOnlyModeRef.current = audioOnlyMode
   }, [audioOnlyMode])
+
+  useEffect(() => {
+    observerModeRef.current = observerMode
+  }, [observerMode])
 
   async function reportQualityEvent(eventType, note = '') {
     if (!token) return
@@ -124,6 +130,61 @@ export default function VideoCall({ roomId, token }) {
     } catch {
       setMicLevel(0)
     }
+  }
+
+  function ensureObserverTransceivers(pc) {
+    if (!pc) return
+    if (!transceiversRef.current.audio) {
+      transceiversRef.current.audio = pc.addTransceiver('audio', { direction: 'recvonly' })
+    }
+    if (!transceiversRef.current.video) {
+      transceiversRef.current.video = pc.addTransceiver('video', { direction: 'recvonly' })
+    }
+  }
+
+  async function negotiatePeer(reason = 'manual-negotiation') {
+    const pc = pcRef.current
+    const ws = wsRef.current
+    if (!pc || !ws || ws.readyState !== WebSocket.OPEN) return
+    try {
+      await pc.setLocalDescription(await pc.createOffer())
+      ws.send(JSON.stringify({ type: 'sdp', sdp: pc.localDescription, reason }))
+    } catch {
+      // ignore renegotiation races
+    }
+  }
+
+  async function ensureObserverMicrophone() {
+    if (!(typeof window !== 'undefined' && window.isSecureContext)) {
+      throw new Error('Созвон требует HTTPS (secure context)')
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Браузер не поддерживает доступ к микрофону')
+    }
+
+    const audioConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      ...(selectedAudioId ? { deviceId: { exact: selectedAudioId } } : {}),
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: audioConstraints })
+    const prev = localStreamRef.current
+    if (prev) prev.getTracks().forEach((t) => t.stop())
+
+    localStreamRef.current = stream
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null
+    }
+
+    setMicOn((stream.getAudioTracks() || []).some((t) => t.enabled))
+    setCamOn(false)
+    setAudioOnlyMode(true)
+    setPermissionHint('Админ подключён как наблюдатель. Микрофон включается только вручную.')
+    await loadDevices()
+    startMeter(stream)
+    return stream
   }
 
   async function ensureLocalMedia(forceAudioOnly = audioOnlyModeRef.current) {
@@ -210,6 +271,7 @@ export default function VideoCall({ roomId, token }) {
     wsRef.current = null
     try { pcRef.current?.close() } catch {}
     pcRef.current = null
+    transceiversRef.current = { audio: null, video: null }
     if (!keepStream) {
       const stream = localStreamRef.current
       if (stream) {
@@ -279,6 +341,10 @@ export default function VideoCall({ roomId, token }) {
       }
     }
 
+    if (observerModeRef.current) {
+      ensureObserverTransceivers(pc)
+    }
+
     pcRef.current = pc
     return pc
   }
@@ -289,14 +355,25 @@ export default function VideoCall({ roomId, token }) {
     const audioTrack = stream.getAudioTracks()[0] || null
     const videoTrack = stream.getVideoTracks()[0] || null
 
-    const audioSender = senders.find((s) => s.track?.kind === 'audio')
-    const videoSender = senders.find((s) => s.track?.kind === 'video')
+    let audioSender = senders.find((s) => s.track?.kind === 'audio')
+    let videoSender = senders.find((s) => s.track?.kind === 'video')
+
+    if (observerModeRef.current) {
+      ensureObserverTransceivers(pc)
+      if (!audioSender && transceiversRef.current.audio) audioSender = transceiversRef.current.audio.sender
+      if (!videoSender && transceiversRef.current.video) videoSender = transceiversRef.current.video.sender
+    }
 
     if (audioSender) await audioSender.replaceTrack(audioTrack)
     else if (audioTrack) pc.addTrack(audioTrack, stream)
 
     if (videoSender) await videoSender.replaceTrack(videoTrack)
     else if (videoTrack) pc.addTrack(videoTrack, stream)
+
+    if (observerModeRef.current) {
+      if (transceiversRef.current.audio) transceiversRef.current.audio.direction = audioTrack ? 'sendrecv' : 'recvonly'
+      if (transceiversRef.current.video) transceiversRef.current.video.direction = videoTrack ? 'sendrecv' : 'recvonly'
+    }
   }
 
   function startStatsMonitor(pc) {
@@ -340,15 +417,8 @@ export default function VideoCall({ roomId, token }) {
     }, 5000)
   }
 
-  async function startSession() {
-    setStatus('Запрашиваем камеру и микрофон…')
-    setWeakNetwork(false)
-    const stream = await ensureLocalMedia(audioOnlyModeRef.current)
-    const pc = createPeerConnection()
-    await syncSendersWithStream(stream)
-    startStatsMonitor(pc)
-
-    setStatus('Ожидаем второго участника…')
+  function connectSignaling(pc) {
+    setStatus(observerModeRef.current ? 'Режим наблюдения: подключаемся к уроку…' : 'Ожидаем второго участника…')
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
     manualCloseRef.current = false
@@ -400,12 +470,33 @@ export default function VideoCall({ roomId, token }) {
     ws.onerror = () => setStatus('Ошибка сигналинга')
   }
 
+  async function startSession() {
+    setWeakNetwork(false)
+    const pc = createPeerConnection()
+    startStatsMonitor(pc)
+
+    if (observerModeRef.current) {
+      setMicOn(false)
+      setCamOn(false)
+      setAudioOnlyMode(true)
+      setPermissionHint('Админ открывает урок как наблюдатель и не публикует камеру/микрофон автоматически.')
+      connectSignaling(pc)
+      return
+    }
+
+    setStatus('Запрашиваем камеру и микрофон…')
+    const stream = await ensureLocalMedia(audioOnlyModeRef.current)
+    await syncSendersWithStream(stream)
+    connectSignaling(pc)
+  }
+
   useEffect(() => {
     mountedRef.current = true
     startSession().catch((e) => {
       const msg = e?.message || 'Не удалось запустить созвон'
       if (mountedRef.current) {
-        setStatus(msg.includes('разреш') ? msg : `${msg}. Разреши доступ к камере/микрофону в браузере.`)
+        const fallback = observerModeRef.current ? msg : (msg.includes('разреш') ? msg : `${msg}. Разреши доступ к камере/микрофону в браузере.`)
+        setStatus(fallback)
       }
     })
 
@@ -427,7 +518,20 @@ export default function VideoCall({ roomId, token }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAudioId, selectedCameraId])
 
-  function toggleMic() {
+  async function toggleMic() {
+    if (observerModeRef.current && !localStreamRef.current) {
+      try {
+        setStatus('Подключаем микрофон администратора…')
+        const stream = await ensureObserverMicrophone()
+        await syncSendersWithStream(stream)
+        await negotiatePeer('observer_mic_enabled')
+        setStatus('Админ слушает урок. Микрофон доступен вручную.')
+      } catch (e) {
+        setStatus(e?.message || 'Не удалось включить микрофон')
+      }
+      return
+    }
+
     const s = localStreamRef.current
     if (!s) return
     const tracks = s.getAudioTracks()
@@ -436,6 +540,7 @@ export default function VideoCall({ roomId, token }) {
   }
 
   function toggleCam() {
+    if (observerModeRef.current) return
     const s = localStreamRef.current
     if (!s) return
     const tracks = s.getVideoTracks()
@@ -482,7 +587,7 @@ export default function VideoCall({ roomId, token }) {
       <div className={`videoGrid ${audioOnlyMode ? 'audioOnlyGrid' : ''}`}>
         <div className="videoBox">
           <video ref={localVideoRef} autoPlay playsInline muted />
-          <div className="videoLabel">Вы</div>
+          <div className="videoLabel">{observerMode ? (micOn ? 'Админ • микрофон доступен' : 'Админ • наблюдатель') : 'Вы'}</div>
         </div>
         <div className="videoBox">
           <video ref={remoteVideoRef} autoPlay playsInline />
@@ -491,25 +596,25 @@ export default function VideoCall({ roomId, token }) {
       </div>
 
       <div className="lessonControlsRow" style={{ marginTop: 12 }}>
-        <button className="btn" onClick={toggleMic}>{micOn ? 'Микрофон: вкл' : 'Микрофон: выкл'}</button>
-        <button className="btn" onClick={toggleCam} disabled={audioOnlyMode}>{camOn ? 'Камера: вкл' : 'Камера: выкл'}</button>
+        <button className="btn" onClick={toggleMic}>{observerMode && !localStreamRef.current ? 'Подключить микрофон' : micOn ? 'Микрофон: вкл' : 'Микрофон: выкл'}</button>
+        {!observerMode && <button className="btn" onClick={toggleCam} disabled={audioOnlyMode}>{camOn ? 'Камера: вкл' : 'Камера: выкл'}</button>}
         <button className="btn btnGhost" onClick={reconnectNow}>Переподключить</button>
-        {!audioOnlyMode ? (
+        {!observerMode && (!audioOnlyMode ? (
           <button className="btn btnGhost" onClick={switchToAudioOnly}>Только аудио</button>
         ) : (
           <button className="btn btnGhost" onClick={returnToVideo}>Вернуть видео</button>
-        )}
+        ))}
         <button className="btn btnGhost" onClick={() => { cleanupConnection({ keepStream: false }); setRetryNonce((prev) => prev + 1) }}>Обновить устройства</button>
       </div>
 
       <div className="lessonDeviceGrid">
-        <div>
+        {!observerMode && <div>
           <div className="label">Камера</div>
           <select className="select" value={selectedCameraId} onChange={(e) => setSelectedCameraId(e.target.value)}>
             {cameraDevices.length === 0 ? <option value="">Камера не найдена</option> : cameraDevices.map((d, idx) => <option key={d.deviceId || idx} value={d.deviceId}>{d.label || `Камера ${idx + 1}`}</option>)}
           </select>
           <div className="small">Активно: {mediaLabel(cameraDevices, selectedCameraId, camOn ? 'камера подключена' : 'камера выключена')}</div>
-        </div>
+        </div>}
         <div>
           <div className="label">Микрофон</div>
           <select className="select" value={selectedAudioId} onChange={(e) => setSelectedAudioId(e.target.value)}>

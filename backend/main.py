@@ -129,6 +129,13 @@ def _startup():
             seed_demo(session)
     except Exception as e:
         print(f'[seed] failed: {e}')
+
+    try:
+        tg_status = _telegram_sync_infra()
+        if tg_status.get('summary'):
+            print(f"[telegram/startup] {tg_status.get('summary')}")
+    except Exception as e:
+        print(f'[telegram/startup] failed: {e}')
 @app.get("/health")
 def health():
     return {"ok": True, "ts": datetime.utcnow().isoformat()}
@@ -433,6 +440,169 @@ def _telegram_api_call(method: str, payload: Dict[str, Any]) -> None:
             resp.read()
     except Exception as e:
         print(f"[telegram/{method}/error] {e}")
+
+
+def _telegram_api_json(method: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    token = str(os.getenv("DL_TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        return {"ok": False, "description": "DL_TELEGRAM_BOT_TOKEN is not configured"}
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    payload = payload or {}
+    data = json.dumps(payload).encode("utf-8") if payload else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            raw = resp.read().decode("utf-8") or "{}"
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[telegram/{method}/json_error] {e}")
+        return {"ok": False, "description": str(e)}
+
+
+def _telegram_webhook_url() -> str:
+    app_url = _public_app_url()
+    if not app_url:
+        return ''
+    return f"{app_url}/api/integrations/telegram/webhook"
+
+
+def _telegram_supported_commands() -> List[Dict[str, str]]:
+    return [
+        {"command": "start", "description": "Подключить бота к DoskoLink"},
+        {"command": "menu", "description": "Открыть главное меню"},
+        {"command": "today", "description": "Занятия на сегодня"},
+        {"command": "tomorrow", "description": "Занятия на завтра"},
+        {"command": "next", "description": "Ближайшее занятие"},
+        {"command": "schedule", "description": "Ближайшие уроки"},
+        {"command": "students_today", "description": "Ученики репетитора на сегодня"},
+        {"command": "homework", "description": "Активные домашние задания"},
+        {"command": "homework_inbox", "description": "Входящие ДЗ для проверки"},
+        {"command": "progress", "description": "Прогресс по темам"},
+        {"command": "balance", "description": "Баланс, оплаты и доход"},
+        {"command": "confirm", "description": "Подтвердить участие в уроке"},
+        {"command": "decline", "description": "Сообщить, что не сможете прийти"},
+        {"command": "notifications", "description": "Статус уведомлений Telegram"},
+        {"command": "notify_on", "description": "Включить уведомления Telegram"},
+        {"command": "notify_off", "description": "Выключить уведомления Telegram"},
+        {"command": "whoami", "description": "Текущий аккаунт и роль"},
+        {"command": "link", "description": "Открыть кабинет DoskoLink"},
+        {"command": "support", "description": "Помощь и поддержка"},
+        {"command": "unlink", "description": "Отвязать Telegram от аккаунта"},
+        {"command": "cancel_review", "description": "Отменить текущую проверку ДЗ"},
+        {"command": "stats", "description": "Админ-статистика платформы"},
+        {"command": "tgstatus", "description": "Статус webhook и Telegram infra"},
+        {"command": "syncbot", "description": "Пересинхронизировать webhook и команды"},
+        {"command": "help", "description": "Полный список команд"},
+    ]
+
+
+
+def _telegram_bot_description_text() -> str:
+    return (
+        'DoskoLink Assistant помогает ученикам, репетиторам и админам видеть уроки, домашки, '        'прогресс, статусы участия и ключевые уведомления прямо в Telegram.'
+    )
+
+
+
+def _telegram_bot_short_description_text() -> str:
+    return 'Расписание, домашки, прогресс, баланс и admin-сводка DoskoLink.'
+
+
+
+def _telegram_sync_commands() -> Dict[str, Any]:
+    return _telegram_api_json('setMyCommands', {"commands": _telegram_supported_commands()})
+
+
+
+def _telegram_sync_profile() -> Dict[str, Any]:
+    description_result = _telegram_api_json('setMyDescription', {
+        'description': _telegram_bot_description_text(),
+    })
+    short_description_result = _telegram_api_json('setMyShortDescription', {
+        'short_description': _telegram_bot_short_description_text(),
+    })
+    menu_button_result = _telegram_api_json('setChatMenuButton', {
+        'menu_button': {'type': 'commands'},
+    })
+    return {
+        'set_description_ok': bool(isinstance(description_result, dict) and description_result.get('ok')),
+        'set_description_description': str((description_result or {}).get('description') or ''),
+        'set_short_description_ok': bool(isinstance(short_description_result, dict) and short_description_result.get('ok')),
+        'set_short_description_description': str((short_description_result or {}).get('description') or ''),
+        'set_menu_button_ok': bool(isinstance(menu_button_result, dict) and menu_button_result.get('ok')),
+        'set_menu_button_description': str((menu_button_result or {}).get('description') or ''),
+    }
+
+
+def _telegram_status_payload() -> Dict[str, Any]:
+    info = _telegram_api_json('getWebhookInfo', {})
+    desired = _telegram_webhook_url()
+    webhook_info = info.get('result') if isinstance(info, dict) and info.get('ok') else {}
+    actual = str((webhook_info or {}).get('url') or '').strip()
+    commands_result = _telegram_api_json('getMyCommands', {})
+    description_result = _telegram_api_json('getMyDescription', {})
+    short_description_result = _telegram_api_json('getMyShortDescription', {})
+    menu_button_result = _telegram_api_json('getChatMenuButton', {})
+    command_items = (commands_result.get('result') if isinstance(commands_result, dict) and commands_result.get('ok') else []) or []
+    bot_description = (description_result.get('result') if isinstance(description_result, dict) and description_result.get('ok') else {}) or {}
+    bot_short_description = (short_description_result.get('result') if isinstance(short_description_result, dict) and short_description_result.get('ok') else {}) or {}
+    menu_button = (menu_button_result.get('result') if isinstance(menu_button_result, dict) and menu_button_result.get('ok') else {}) or {}
+    return {
+        "bot_username": _telegram_bot_username(),
+        "token_configured": bool(str(os.getenv('DL_TELEGRAM_BOT_TOKEN') or '').strip()),
+        "public_app_url": _public_app_url(),
+        "desired_webhook_url": desired,
+        "secret_configured": bool(str(os.getenv('DL_TELEGRAM_WEBHOOK_SECRET') or '').strip()),
+        "webhook_info": webhook_info or {},
+        "webhook_matches": bool(desired and actual and desired == actual),
+        "api_ok": bool(isinstance(info, dict) and info.get('ok')),
+        "api_description": str((info or {}).get('description') or ''),
+        "configured_commands": [str(item.get('command') or '') for item in command_items if str(item.get('command') or '').strip()],
+        "commands_count": len(command_items),
+        "bot_description": str((bot_description or {}).get('description') or ''),
+        "bot_short_description": str((bot_short_description or {}).get('short_description') or ''),
+        "menu_button_type": str((menu_button or {}).get('type') or ''),
+    }
+
+
+def _telegram_sync_infra() -> Dict[str, Any]:
+    status = _telegram_status_payload()
+    desired = str(status.get('desired_webhook_url') or '').strip()
+    if not status.get('token_configured'):
+        status['summary'] = 'Не задан DL_TELEGRAM_BOT_TOKEN.'
+        return status
+    if not desired:
+        status['summary'] = 'Не задан DL_PUBLIC_APP_URL, поэтому webhook некуда регистрировать.'
+        return status
+
+    payload: Dict[str, Any] = {
+        "url": desired,
+        "allowed_updates": ["message", "edited_message", "callback_query"],
+        "drop_pending_updates": False,
+    }
+    secret = str(os.getenv('DL_TELEGRAM_WEBHOOK_SECRET') or '').strip()
+    if secret:
+        payload['secret_token'] = secret
+
+    set_result = _telegram_api_json('setWebhook', payload)
+    cmd_result = _telegram_sync_commands()
+    profile_result = _telegram_sync_profile()
+    refreshed = _telegram_status_payload()
+    refreshed['set_webhook_ok'] = bool(isinstance(set_result, dict) and set_result.get('ok'))
+    refreshed['set_webhook_description'] = str((set_result or {}).get('description') or '')
+    refreshed['set_commands_ok'] = bool(isinstance(cmd_result, dict) and cmd_result.get('ok'))
+    refreshed['set_commands_description'] = str((cmd_result or {}).get('description') or '')
+    refreshed.update(profile_result)
+    refreshed['summary'] = (
+        'Telegram webhook, команды и профиль бота синхронизированы.'
+        if refreshed.get('webhook_matches') else
+        'Webhook не совпадает с ожидаемым URL. Проверьте DL_PUBLIC_APP_URL и настройки Railway.'
+    )
+    return refreshed
 
 
 def _telegram_api_call_multipart(method: str, fields: Dict[str, Any], files: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -1264,7 +1434,7 @@ def _telegram_menu_keyboard(role_or_user: Any) -> Dict[str, Any]:
         [{'text': '📅 Сегодня'}, {'text': '⏭ Ближайшее'}],
         [{'text': '🗓 Расписание'}, {'text': '🧾 Кто я'}],
         [{'text': '💳 Баланс'}, {'text': '🏠 Кабинет'}],
-        [{'text': '👋 Помощь'}],
+        [{'text': '🔔 Уведомления'}, {'text': '👋 Помощь'}],
     ]
     if role == 'tutor':
         keyboard.insert(1, [{'text': '👥 Ученики сегодня'}])
@@ -1275,7 +1445,8 @@ def _telegram_menu_keyboard(role_or_user: Any) -> Dict[str, Any]:
         keyboard.insert(2, [{'text': '📚 Домашки'}, {'text': '📈 Прогресс'}])
         keyboard.insert(3, [{'text': '✅ Подтвердить'}, {'text': '⚠️ Не смогу'}])
     if role == 'admin':
-        keyboard.insert(2, [{'text': '📊 Статистика'}, {'text': '📈 Прогресс'}])
+        keyboard.insert(2, [{'text': '📊 Статистика'}, {'text': '🤖 Статус бота'}])
+        keyboard.insert(3, [{'text': '🔄 Sync бота'}, {'text': '📈 Прогресс'}])
     return {
         'keyboard': keyboard,
         'resize_keyboard': True,
@@ -1294,11 +1465,77 @@ def _telegram_support_text(user: User) -> str:
         'Что можно сделать прямо сейчас:',
         '• нажать «🏠 Кабинет» и открыть сайт',
         '• отправить /whoami, чтобы проверить текущую привязку',
+        '• отправить /notifications, чтобы проверить статус Telegram-уведомлений',
         '• отправить /unlink и подключить Telegram заново при необходимости',
     ]
     if _public_app_url():
         lines.append('')
         lines.append(f'Сайт DoskoLink: {_dashboard_url(user) or _public_app_url()}')
+    return '\n'.join(lines)
+
+
+
+def _telegram_notifications_markup(user: User) -> Dict[str, Any]:
+    buttons: List[List[Dict[str, str]]] = [
+        [
+            {'text': '🔔 Включить', 'callback_data': 'notify:on'},
+            {'text': '🔕 Выключить', 'callback_data': 'notify:off'},
+        ]
+    ]
+    dash = _dashboard_url(user)
+    if dash:
+        buttons.append([{'text': '🏠 Открыть кабинет', 'url': dash}])
+    return {'inline_keyboard': buttons}
+
+
+
+def _telegram_notifications_text(user: User) -> str:
+    state = 'включены' if getattr(user, 'notify_telegram', False) else 'выключены'
+    lines = [
+        '🔔 Telegram-уведомления DoskoLink',
+        f'Текущий статус: {state}.',
+        'Что приходит в Telegram:',
+        '• ближайшие занятия и статусы участия',
+        '• домашние задания и проверка',
+        '• важные события по урокам и платформе',
+        '',
+        'Команды: /notify_on, /notify_off, /notifications',
+    ]
+    return '\n'.join(lines)
+
+
+
+def _telegram_set_notifications(chat_id: str, user: User, session: Session, enabled: bool) -> None:
+    user.notify_telegram = bool(enabled)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    state = 'включены' if enabled else 'выключены'
+    _send_telegram(chat_id, f'Готово: Telegram-уведомления {state}.\n\n{_telegram_notifications_text(user)}', reply_markup=_telegram_notifications_markup(user))
+
+
+def _telegram_send_notifications(chat_id: str, user: User) -> None:
+    _send_telegram(chat_id, _telegram_notifications_text(user), reply_markup=_telegram_notifications_markup(user))
+
+
+
+def _telegram_admin_status_text(session: Session) -> str:
+    status = _telegram_status_payload()
+    lines = [
+        '🤖 Telegram infra status',
+        f'Bot: @{status.get("bot_username") or "—"}',
+        f'Webhook совпадает: {"да" if status.get("webhook_matches") else "нет"}',
+        f'Pending updates: {int((status.get("webhook_info") or {}).get("pending_update_count") or 0)}',
+        f'Команд загружено: {int(status.get("commands_count") or 0)}',
+        f'Меню-кнопка: {status.get("menu_button_type") or "—"}',
+        f'Публичный URL: {status.get("public_app_url") or "не задан"}',
+    ]
+    last_error = str(((status.get('webhook_info') or {}).get('last_error_message')) or '').strip()
+    if last_error:
+        lines.append(f'Последняя ошибка: {last_error}')
+    users = session.exec(select(User)).all()
+    linked = len([u for u in users if getattr(u, 'telegram_chat_id', None)])
+    lines.append(f'Подключённых аккаунтов: {linked}')
     return '\n'.join(lines)
 
 
@@ -1882,6 +2119,9 @@ def _telegram_help_text(role: str) -> str:
         '/homework_inbox — входящие ДЗ для проверки',
         '/progress — прогресс по темам и результатам',
         '/balance — баланс, оплаты и начисления',
+        '/notifications — статус Telegram-уведомлений',
+        '/notify_on — включить уведомления Telegram',
+        '/notify_off — выключить уведомления Telegram',
         '/link — открыть кабинет DoskoLink',
         '/support — подсказка и быстрый путь назад в кабинет',
         '/unlink — отвязать Telegram от аккаунта',
@@ -1890,7 +2130,8 @@ def _telegram_help_text(role: str) -> str:
     if role == 'admin':
         lines.extend([
             '/stats — сводка платформы для админа',
-            '/balance — финансовая сводка платформы',
+            '/tgstatus — webhook, команды и состояние Telegram infra',
+            '/syncbot — пересинхронизировать webhook, команды и профиль бота',
             '🎛 Роль: админ. Бот показывает сводку платформы, ближайшие уроки, Telegram-подключения и финансы.',
         ])
     else:
@@ -2229,6 +2470,22 @@ def me_telegram_unlink(
     }
 
 
+
+@app.get('/api/admin/integrations/telegram/status')
+def admin_telegram_status(
+    _: User = Depends(require_role('admin')),
+):
+    return _telegram_status_payload()
+
+
+@app.post('/api/admin/integrations/telegram/sync')
+def admin_telegram_sync(
+    _: User = Depends(require_role('admin')),
+):
+    return _telegram_sync_infra()
+
+
+
 @app.post('/api/integrations/telegram/webhook')
 async def telegram_webhook(
     request: Request,
@@ -2302,6 +2559,11 @@ async def telegram_webhook(
                 homework_id = int(hw_cb.group(2))
                 _telegram_begin_homework_review(chat_id, user, session, homework_id, action)
                 _telegram_answer_callback(callback_id, 'Жду текстовый фидбек')
+                return {'ok': True}
+
+            if data in {'notify:on', 'notify:off'}:
+                _telegram_set_notifications(chat_id, user, session, enabled=(data == 'notify:on'))
+                _telegram_answer_callback(callback_id, 'Настройки уведомлений обновлены')
                 return {'ok': True}
 
             if data == 'menu:help':
@@ -2396,9 +2658,12 @@ async def telegram_webhook(
             '🧾 кто я': '/whoami',
             '🏠 кабинет': '/link',
             '👋 помощь': '/help',
+            '🔔 уведомления': '/notifications',
             '✅ подтвердить': '/confirm',
             '⚠️ не смогу': '/decline',
             '📊 статистика': '/stats',
+            '🤖 статус бота': '/tgstatus',
+            '🔄 sync бота': '/syncbot',
         }
         command = quick_map.get(text.strip().lower(), '')
 
@@ -2417,9 +2682,9 @@ async def telegram_webhook(
         _telegram_send_today_like(chat_id, user, session, day_offset=0)
     elif command == '/tomorrow':
         _telegram_send_today_like(chat_id, user, session, day_offset=1)
-    elif command == '/next':
+    elif command in {'/next'}:
         _telegram_send_next(chat_id, user, session)
-    elif command == '/schedule':
+    elif command in {'/schedule', '/lessons'}:
         _telegram_send_schedule(chat_id, user, session)
     elif command == '/students_today':
         _telegram_send_students_today(chat_id, user, session)
@@ -2431,6 +2696,12 @@ async def telegram_webhook(
         _telegram_send_progress(chat_id, user, session)
     elif command == '/balance':
         _telegram_send_balance(chat_id, user, session)
+    elif command == '/notifications':
+        _telegram_send_notifications(chat_id, user)
+    elif command == '/notify_on':
+        _telegram_set_notifications(chat_id, user, session, True)
+    elif command == '/notify_off':
+        _telegram_set_notifications(chat_id, user, session, False)
     elif command == '/confirm':
         _telegram_apply_attendance_status(chat_id, user, session, 'confirmed', arg)
     elif command == '/decline':
@@ -2442,10 +2713,21 @@ async def telegram_webhook(
             _telegram_send_admin_stats(chat_id, session)
         else:
             _send_telegram(chat_id, 'Команда /stats доступна только администратору. Остальные команды подстраиваются по вашей роли автоматически.', reply_markup=_telegram_menu_keyboard(user))
+    elif command == '/tgstatus':
+        if _telegram_role_key(user) == 'admin':
+            _send_telegram(chat_id, _telegram_admin_status_text(session), reply_markup=_telegram_menu_keyboard(user))
+        else:
+            _send_telegram(chat_id, 'Команда /tgstatus доступна только администратору.', reply_markup=_telegram_menu_keyboard(user))
+    elif command == '/syncbot':
+        if _telegram_role_key(user) == 'admin':
+            sync_data = _telegram_sync_infra()
+            _send_telegram(chat_id, str(sync_data.get('summary') or 'Синхронизация выполнена.') + '\n\n' + _telegram_admin_status_text(session), reply_markup=_telegram_menu_keyboard(user))
+        else:
+            _send_telegram(chat_id, 'Команда /syncbot доступна только администратору.', reply_markup=_telegram_menu_keyboard(user))
     elif command == '/whoami':
         dash = _dashboard_url(user)
         _send_telegram(chat_id, _telegram_whoami_text(user, session), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]} if dash else _telegram_menu_keyboard(user))
-    elif command == '/link':
+    elif command in {'/link', '/cabinet'}:
         _telegram_send_link(chat_id, user)
     elif command == '/unlink':
         _telegram_unlink(chat_id, user, session)

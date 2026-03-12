@@ -688,7 +688,7 @@ export default function Room() {
             </div>
             <div className="lessonPanelBadge">Live</div>
           </div>
-          <VideoCall roomId={roomId} token={token} />
+          <VideoCall roomId={roomId} token={token} observerMode={me?.role === 'admin'} />
         </div>
 
         <div className="card lessonPanelCard productSectionCard">

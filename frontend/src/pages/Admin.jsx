@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import { apiFetch } from '../api'
 
 const TABS = [
-  { id: 'overview', title: 'Сводка' },
-  { id: 'moderation', title: 'Модерация репетиторов' },
-  { id: 'catalog', title: 'Категории' },
-  { id: 'reports', title: 'Жалобы/репорты' },
-  { id: 'bookings', title: 'Занятия' },
-  { id: 'reviews', title: 'Отзывы' },
-  { id: 'users', title: 'Пользователи' },
+  { id: 'overview', title: 'Сводка', searchable: false, hint: 'Главные метрики, пульс платформы и быстрые действия.' },
+  { id: 'telegram', title: 'Telegram', searchable: false, hint: 'Подключение, webhook, команды и диагностика бота.' },
+  { id: 'moderation', title: 'Модерация', searchable: true, hint: 'Проверка профилей репетиторов, документов и публикации.' },
+  { id: 'catalog', title: 'Категории', searchable: true, hint: 'Предметы, цели, уровни, экзамены и словари платформы.' },
+  { id: 'reports', title: 'Репорты', searchable: true, hint: 'Жалобы пользователей и спорные ситуации по урокам.' },
+  { id: 'bookings', title: 'Занятия', searchable: true, hint: 'Статусы уроков, переносы и быстрый переход в комнату.' },
+  { id: 'reviews', title: 'Отзывы', searchable: true, hint: 'Модерация отзывов и контроль качества выдачи.' },
+  { id: 'users', title: 'Пользователи', searchable: true, hint: 'Поиск пользователей, роли, блокировки и баланс.' },
 ]
 
 const CATALOG_KINDS = [
@@ -22,23 +23,33 @@ const CATALOG_KINDS = [
   { value: 'exam', label: 'Экзамены' },
 ]
 
-function AdminStat({ label, value }) {
+const TELEGRAM_BOT_FALLBACK = 'doskolink_bot'
+
+function AdminStat({ label, value, helper = '', tone = 'default' }) {
   return (
-    <div className="adminStat">
+    <div className={`adminStat adminStatTone-${tone}`}>
       <div className="small">{label}</div>
-      <div style={{ fontWeight: 900, fontSize: 20 }}>{value ?? 0}</div>
+      <div className="adminStatValue">{value ?? 0}</div>
+      {helper ? <div className="small">{helper}</div> : null}
     </div>
   )
+}
+
+function StatusPill({ children, tone = 'default' }) {
+  return <span className={`pill statusPill statusPill-${tone}`}>{children}</span>
 }
 
 function boolMark(v) {
   return v ? '✓' : '—'
 }
 
-const TELEGRAM_BOT_FALLBACK = 'doskolink_bot'
+function formatDateTimeShort(v) {
+  if (!v) return '—'
+  try { return new Date(v).toLocaleString() } catch { return String(v) }
+}
 
-function telegramBotUsername(link) {
-  return String(link?.bot_username || TELEGRAM_BOT_FALLBACK || '').trim().replace(/^@+/, '')
+function telegramBotUsername(link, status) {
+  return String(status?.bot_username || link?.bot_username || TELEGRAM_BOT_FALLBACK || '').trim().replace(/^@+/, '')
 }
 
 function telegramConnectUrl(link) {
@@ -50,7 +61,6 @@ function telegramConnectUrl(link) {
   if (username) return `https://t.me/${username}`
   return ''
 }
-
 
 function telegramAppUrl(link) {
   const token = String(link?.token || '').trim()
@@ -74,7 +84,13 @@ function telegramShortStartCommand(link) {
 }
 
 function telegramFeatureBullets() {
-  return ['Сводка платформы', 'Команды /stats и /balance', 'Клавиатура быстрых действий в боте']
+  return ['Сводка платформы', 'Role-based команды', 'Клавиатура быстрых действий', 'Webhook + bot profile sync', 'Уведомления on/off', 'Связка аккаунта по deep link']
+}
+
+function telegramCommandChips(status) {
+  const fromStatus = Array.isArray(status?.configured_commands) ? status.configured_commands.filter(Boolean).map(cmd => `/${String(cmd).replace(/^\/+/, '')}`) : []
+  if (fromStatus.length) return fromStatus
+  return ['/menu', '/today', '/tomorrow', '/next', '/schedule', '/homework', '/progress', '/balance', '/notifications', '/stats', '/tgstatus', '/help']
 }
 
 async function copyTextSafe(text) {
@@ -120,16 +136,19 @@ function openExternalUrl(url) {
   }
 }
 
-function formatDateTimeShort(v) {
-  if (!v) return '—'
-  try { return new Date(v).toLocaleString() } catch { return String(v) }
+function listCountLabel(count, one, many) {
+  return `${count} ${count === 1 ? one : many}`
 }
 
 export default function Admin() {
   const { me, token, loading } = useAuth()
   const nav = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
-  const [tab, setTab] = useState('overview')
+  const requestedTab = searchParams.get('tab')
+  const initialTab = TABS.some(t => t.id === requestedTab) ? requestedTab : 'overview'
+
+  const [tab, setTab] = useState(initialTab)
   const [q, setQ] = useState('')
   const [err, setErr] = useState('')
   const [tgNotice, setTgNotice] = useState('')
@@ -144,6 +163,7 @@ export default function Admin() {
   const [catalog, setCatalog] = useState([])
   const [telegramSettings, setTelegramSettings] = useState(null)
   const [telegramLink, setTelegramLink] = useState(null)
+  const [telegramStatus, setTelegramStatus] = useState(null)
 
   const [tutorStatusFilter, setTutorStatusFilter] = useState('pending')
   const [bookingStatus, setBookingStatus] = useState('')
@@ -153,28 +173,61 @@ export default function Admin() {
   const [catalogValue, setCatalogValue] = useState('')
   const [catalogOrder, setCatalogOrder] = useState('0')
 
+  const activeTab = useMemo(() => TABS.find(t => t.id === tab) || TABS[0], [tab])
+  const canLoad = useMemo(() => Boolean(token && me?.role === 'admin'), [token, me])
+
   useEffect(() => {
     if (loading) return
     if (!me) nav('/login')
     else if (me.role !== 'admin') nav('/')
   }, [loading, me, nav])
 
-  const canLoad = useMemo(() => Boolean(token && me?.role === 'admin'), [token, me])
+  useEffect(() => {
+    const next = TABS.some(t => t.id === requestedTab) ? requestedTab : 'overview'
+    if (next !== tab) setTab(next)
+  }, [requestedTab])
+
+  function goTab(nextTab) {
+    setTab(nextTab)
+    const nextParams = new URLSearchParams(searchParams)
+    if (nextTab === 'overview') nextParams.delete('tab')
+    else nextParams.set('tab', nextTab)
+    setSearchParams(nextParams, { replace: true })
+  }
 
   async function loadTelegramPanel() {
     if (!canLoad) return
     try {
-      const [settingsRes, linkRes] = await Promise.all([
+      const results = await Promise.allSettled([
         apiFetch('/api/me/settings', { token }),
         apiFetch('/api/me/telegram-link', { token }),
+        apiFetch('/api/admin/integrations/telegram/status', { token }),
       ])
-      setTelegramSettings(settingsRes || null)
-      setTelegramLink(linkRes || null)
+
+      if (results[0].status === 'fulfilled') setTelegramSettings(results[0].value || null)
+      if (results[1].status === 'fulfilled') setTelegramLink(results[1].value || null)
+      if (results[2].status === 'fulfilled') setTelegramStatus(results[2].value || null)
     } catch (e) {
       setErr(e.message || 'Не удалось загрузить Telegram-настройки')
     }
   }
 
+  async function syncTelegramInfra() {
+    if (!canLoad) return
+    setSaving(true)
+    setErr('')
+    setTgNotice('')
+    try {
+      const data = await apiFetch('/api/admin/integrations/telegram/sync', { method: 'POST', token })
+      setTelegramStatus(data || null)
+      setTgNotice(data?.summary || 'Webhook и команды Telegram обновлены.')
+      await loadTelegramPanel()
+    } catch (e) {
+      setErr(e.message || 'Не удалось синхронизировать Telegram')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function copyTelegramStart(linkObj = telegramLink) {
     const cmd = telegramStartCommand(linkObj)
@@ -224,7 +277,6 @@ export default function Admin() {
     setSaving(true)
     setErr('')
     setTgNotice('')
-    setTgNotice('')
     try {
       const data = await apiFetch('/api/me/telegram-link', { method: 'POST', token })
       setTelegramLink(data || null)
@@ -245,6 +297,7 @@ export default function Admin() {
       setTelegramSettings(prev => ({ ...(prev || {}), ...(st || {}) }))
       const linkRes = await apiFetch('/api/me/telegram-link', { token })
       setTelegramLink(linkRes || null)
+      await loadTelegramPanel()
     } catch (e) {
       setErr(e.message || 'Не удалось отвязать Telegram')
     } finally {
@@ -258,6 +311,10 @@ export default function Admin() {
     try {
       if (tab === 'overview') {
         setOverview(await apiFetch('/api/admin/overview', { token }))
+        return
+      }
+      if (tab === 'telegram') {
+        await loadTelegramPanel()
         return
       }
       if (tab === 'users') {
@@ -310,8 +367,10 @@ export default function Admin() {
     }
   }
 
-  useEffect(() => { loadActive() }, [tab, token, canLoad])
-  useEffect(() => { if (canLoad) loadTelegramPanel() }, [canLoad, token])
+  useEffect(() => {
+    if (!canLoad) return
+    loadActive()
+  }, [tab, token, canLoad])
 
   async function refreshCurrent() {
     await loadActive()
@@ -377,7 +436,7 @@ export default function Admin() {
   }
 
   async function deleteReview(r) {
-    if (!confirm('Удалить отзыв?')) return
+    if (!window.confirm('Удалить отзыв?')) return
     setSaving(true)
     setErr('')
     try {
@@ -435,7 +494,7 @@ export default function Admin() {
   }
 
   async function deleteCatalogItem(item) {
-    if (!confirm(`Удалить «${item.value}»?`)) return
+    if (!window.confirm(`Удалить «${item.value}»?`)) return
     setSaving(true)
     setErr('')
     try {
@@ -448,126 +507,247 @@ export default function Admin() {
     }
   }
 
+  const visibleTutors = useMemo(() => {
+    if (!q.trim()) return tutors
+    const needle = q.trim().toLowerCase()
+    return tutors.filter((p) => {
+      const hay = [p.display_name, p.email, ...(p.subjects || []), ...(p.goals || [])].join(' ').toLowerCase()
+      return hay.includes(needle)
+    })
+  }, [tutors, q])
+
+  const visibleCatalog = useMemo(() => {
+    if (!q.trim()) return catalog
+    const needle = q.trim().toLowerCase()
+    return catalog.filter((item) => `${item.value || ''}`.toLowerCase().includes(needle))
+  }, [catalog, q])
+
+  const visibleReports = useMemo(() => {
+    if (!q.trim()) return reports
+    const needle = q.trim().toLowerCase()
+    return reports.filter((r) => [r.category, r.message, r.reporter_email, r.reported_email].join(' ').toLowerCase().includes(needle))
+  }, [reports, q])
+
+  const overviewMetrics = useMemo(() => {
+    const o = overview || {}
+    const publicationRate = o.profiles ? Math.round((Number(o.published_profiles || 0) / Math.max(1, Number(o.profiles || 0))) * 100) : 0
+    const completionRate = o.bookings ? Math.round((Number(o.bookings_done || 0) / Math.max(1, Number(o.bookings || 0))) * 100) : 0
+    const reviewCoverage = o.bookings_done ? Math.round((Number(o.reviews || 0) / Math.max(1, Number(o.bookings_done || 0))) * 100) : 0
+    const reportLoad = o.users ? Math.round((Number(o.open_reports || 0) / Math.max(1, Number(o.users || 0))) * 100) : 0
+    return { publicationRate, completionRate, reviewCoverage, reportLoad }
+  }, [overview])
+
+  const moderationMetrics = useMemo(() => {
+    const arr = Array.isArray(visibleTutors) ? visibleTutors : []
+    return {
+      total: arr.length,
+      approved: arr.filter(x => x.documents_status === 'approved').length,
+      pending: arr.filter(x => x.documents_status === 'pending').length,
+      rejected: arr.filter(x => x.documents_status === 'rejected').length,
+      published: arr.filter(x => x.is_published).length,
+    }
+  }, [visibleTutors])
+
+  const usersMetrics = useMemo(() => {
+    const arr = Array.isArray(users) ? users : []
+    return {
+      total: arr.length,
+      admins: arr.filter(x => x.role === 'admin').length,
+      tutors: arr.filter(x => x.role === 'tutor').length,
+      students: arr.filter(x => x.role === 'student').length,
+      blocked: arr.filter(x => !x.is_active).length,
+    }
+  }, [users])
+
+  const telegramReady = Boolean(telegramStatus?.token_configured && telegramStatus?.public_app_url && telegramStatus?.desired_webhook_url)
+  const telegramWebhookLive = Boolean(telegramStatus?.webhook_matches)
+
   if (!me || me.role !== 'admin') return null
 
   return (
     <div className="adminShell productPage adminDesignSet">
       <div className="adminSidebar card productSidebarCard">
         <div className="productPageTitle">Admin</div>
-        <div className="small">Education Dashboard style (MVP)</div>
+        <div className="small">Операции, модерация, Telegram и качество платформы</div>
         <div className="adminMenu">
           {TABS.map(t => (
-            <button key={t.id} className={tab === t.id ? 'btn btnPrimary adminMenuBtn' : 'btn adminMenuBtn'} onClick={() => setTab(t.id)}>
+            <button key={t.id} className={tab === t.id ? 'btn btnPrimary adminMenuBtn' : 'btn adminMenuBtn'} onClick={() => goTab(t.id)}>
               {t.title}
             </button>
           ))}
         </div>
-        <div className="small" style={{ marginTop: 'auto' }}>Роль: {me.role}</div>
+        <div className="adminSidebarFooter">
+          <StatusPill tone={telegramWebhookLive ? 'success' : 'warn'}>{telegramWebhookLive ? 'Telegram live' : 'Telegram требует sync'}</StatusPill>
+          <div className="small">Роль: {me.role}</div>
+        </div>
       </div>
 
       <div className="grid" style={{ gap: 12 }}>
         <div className="card productHeroCard">
           <div className="productHeroTop">
             <div>
-              <div className="productPageTitle">
-                {TABS.find(x => x.id === tab)?.title || 'Админка'}
-              </div>
-              <div className="small">Модерация профилей, документы, жалобы и категории предметов/целей.</div>
+              <div className="productPageTitle">{activeTab.title}</div>
+              <div className="small">{activeTab.hint}</div>
             </div>
-            <div className="productActionBar">
-              <input className="input" style={{ minWidth: 220 }} value={q} onChange={e => setQ(e.target.value)} placeholder="Поиск (email / текст)" />
+            <div className="productActionBar adminActionBarWrap">
+              {activeTab.searchable ? (
+                <input
+                  className="input adminSearchInput"
+                  value={q}
+                  onChange={e => setQ(e.target.value)}
+                  placeholder={tab === 'users' ? 'Поиск по email' : tab === 'moderation' ? 'Поиск по имени, email, предмету' : 'Поиск по тексту'}
+                />
+              ) : null}
               <button className="btn" onClick={refreshCurrent} disabled={saving}>Обновить</button>
+              <button className="btn" onClick={() => goTab('telegram')}>Telegram</button>
               <Link className="btn" to="/">На сайт</Link>
             </div>
+          </div>
+          <div className="adminHeroStatsRow">
+            <StatusPill tone="default">Раздел: {activeTab.title}</StatusPill>
+            {tab === 'moderation' ? <StatusPill tone="warn">{listCountLabel(moderationMetrics.pending, 'pending', 'pending')}</StatusPill> : null}
+            {tab === 'users' ? <StatusPill tone="default">Пользователей: {usersMetrics.total}</StatusPill> : null}
+            <StatusPill tone={telegramReady ? 'success' : 'warn'}>{telegramReady ? 'Конфиг Telegram готов' : 'Проверь env Telegram'}</StatusPill>
           </div>
           {err && <div className="footerNote">{err}</div>}
           {tgNotice && <div className="footerNote">{tgNotice}</div>}
         </div>
 
-        <div className="telegramAssistantCard productSectionCard">
-          <div className="telegramAssistantHeader">
-            <div className="telegramAssistantMeta">
-              <img className="telegramAvatar" src="/telegram-assistant-avatar.png" alt="DoskoLink Assistant" />
-              <div>
-                <div className="telegramEyebrow">Admin control</div>
-                <div className="telegramTitle">Telegram для админа</div>
-                <div className="small" style={{ marginTop: 6 }}>
-                  {telegramLink?.connected
-                    ? `Подключено: ${telegramSettings?.telegram_username ? '@' + telegramSettings.telegram_username : (telegramSettings?.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(telegramSettings?.telegram_linked_at)}`
-                    : 'Подключи Telegram прямо из админ-панели: кнопка откроет бота с готовой командой /start.'}
-                </div>
-              </div>
-            </div>
-            <div className="telegramBadgeWrap">
-              <div className="telegramRoleBadge">Роль: админ</div>
-              <div className="telegramBotBadge">@{telegramBotUsername(telegramLink)}</div>
-            </div>
-          </div>
-
-          <div className="telegramFeatureGrid">
-            {telegramFeatureBullets().map((item) => (
-              <div key={item} className="telegramFeatureItem">{item}</div>
-            ))}
-          </div>
-
-          <div className="telegramCommandRow">
-            {['/menu', '/whoami', '/today', '/next', '/schedule', '/stats', '/balance'].map((cmd) => (
-              <span key={cmd} className="telegramCommandChip">{cmd}</span>
-            ))}
-          </div>
-          <div className="footerNote" style={{ marginTop: 8 }}>Внутри бота для админа появится клавиатура с быстрым доступом к сводке, финансам, расписанию и кабинету.</div>
-          {tgNotice ? <div className="telegramNotice"><b>{tgNotice}</b></div> : null}
-
-          <div className="telegramActionRow">
-            <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving}>Подключить Telegram</button>
-            <button className="btn" onClick={() => copyTelegramStart(telegramLink)} disabled={saving || !telegramLink?.token}>Скопировать команду</button>
-            <button className="btn" onClick={() => refreshTelegramConnect(true)} disabled={saving}>Новая ссылка</button>
-            <button className="btn" onClick={unlinkTelegramConnect} disabled={saving || !telegramLink?.connected}>Отвязать</button>
-          </div>
-          {telegramLink?.token ? (
-            <div className="telegramCodeGroup">
-              <div className="label">Короткая команда для ручного запуска</div>
-              <input className="input telegramCodeInput" value={telegramShortStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
-              <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без кода не подключит аккаунт.</div>
-              <div className="label" style={{ marginTop: 10 }}>Полная команда</div>
-              <input className="input telegramCodeInput" value={telegramStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
-            </div>
-          ) : null}
-        </div>
-
         {tab === 'overview' && overview && (
           <>
             <div className="adminStatsGrid">
-              <AdminStat label="Пользователи" value={overview.users} />
-              <AdminStat label="Репетиторы" value={overview.tutors} />
-              <AdminStat label="Профили" value={overview.profiles} />
-              <AdminStat label="Опубликованные" value={overview.published_profiles} />
-              <AdminStat label="Занятия" value={overview.bookings} />
-              <AdminStat label="Done" value={overview.bookings_done} />
-              <AdminStat label="Отзывы" value={overview.reviews} />
-              <AdminStat label="Открытые репорты" value={overview.open_reports} />
+              <AdminStat label="Пользователи" value={overview.users} helper={`${overview.students || 0} students`} />
+              <AdminStat label="Репетиторы" value={overview.tutors} helper={`${overview.admins || 0} admins`} />
+              <AdminStat label="Профили" value={overview.profiles} helper={`${overview.published_profiles || 0} опубликовано`} tone="accent" />
+              <AdminStat label="Занятия" value={overview.bookings} helper={`${overview.bookings_done || 0} done`} />
+              <AdminStat label="Отзывы" value={overview.reviews} helper={`${overview.open_reports || 0} open reports`} />
+              <AdminStat label="ДЗ" value={overview.homework} helper={`${overview.topics || 0} topics`} />
+              <AdminStat label="Планы" value={overview.plans} helper={`${overview.plan_items || 0} items`} />
+              <AdminStat label="Квизы" value={overview.quizzes} helper={`${overview.quiz_attempts || 0} attempts`} />
             </div>
-            <div className="card" style={{ display: 'grid', gap: 12 }}>
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>Attendance / show-rate</div>
-                <div className="small">Простая аналитика по тому, кто вошёл в уроки, где были опоздания и проблемы со связью.</div>
+
+            <div className="adminOverviewGrid">
+              <div className="card adminInsightCard">
+                <div className="panelTitle">
+                  <div>
+                    <div className="h3">Пульс платформы</div>
+                    <div className="small">Быстрые операционные коэффициенты по текущим данным.</div>
+                  </div>
+                </div>
+                <div className="adminMiniGrid">
+                  <AdminStat label="Publication rate" value={`${overviewMetrics.publicationRate}%`} tone="success" />
+                  <AdminStat label="Completion rate" value={`${overviewMetrics.completionRate}%`} tone="accent" />
+                  <AdminStat label="Review coverage" value={`${overviewMetrics.reviewCoverage}%`} tone="default" />
+                  <AdminStat label="Report load" value={`${overviewMetrics.reportLoad}%`} tone="warn" />
+                </div>
+                <div className="adminQuickLinks">
+                  <button className="btn" onClick={() => goTab('moderation')}>Проверить модерацию</button>
+                  <button className="btn" onClick={() => goTab('reports')}>Открыть жалобы</button>
+                  <button className="btn" onClick={() => goTab('telegram')}>Проверить Telegram</button>
+                </div>
               </div>
-              <div className="adminStatsGrid">
-                <AdminStat label="Show-rate" value={`${overview.attendance?.participant_show_rate_percent ?? 0}%`} />
-                <AdminStat label="Уроков с обоими" value={overview.attendance?.joined_both ?? 0} />
-                <AdminStat label="Опозданий" value={overview.attendance?.late_entries ?? 0} />
-                <AdminStat label="Не пришли" value={overview.attendance?.lessons_with_absent ?? 0} />
-                <AdminStat label="Слабая сеть" value={overview.attendance?.weak_network_events ?? 0} />
-                <AdminStat label="Audio fallback" value={overview.attendance?.audio_only_events ?? 0} />
-              </div>
-              <div className="small">Быстрый запуск MVP:</div>
-              <div className="pills" style={{ marginTop: 8 }}>
-                <button className="btn" onClick={() => setTab('moderation')}>Проверить документы репетиторов</button>
-                <button className="btn" onClick={() => setTab('catalog')}>Обновить предметы/цели</button>
-                <button className="btn" onClick={() => setTab('reports')}>Открыть жалобы</button>
+
+              <div className="card adminInsightCard">
+                <div className="panelTitle">
+                  <div>
+                    <div className="h3">Attendance / show-rate</div>
+                    <div className="small">Статусы присутствия и качество связи на уроках.</div>
+                  </div>
+                </div>
+                <div className="adminMiniGrid">
+                  <AdminStat label="Show-rate" value={`${overview.attendance?.participant_show_rate_percent ?? 0}%`} tone="success" />
+                  <AdminStat label="Оба участника" value={overview.attendance?.joined_both ?? 0} />
+                  <AdminStat label="Опозданий" value={overview.attendance?.late_entries ?? 0} tone="warn" />
+                  <AdminStat label="Не пришли" value={overview.attendance?.lessons_with_absent ?? 0} tone="warn" />
+                  <AdminStat label="Слабая сеть" value={overview.attendance?.weak_network_events ?? 0} tone="warn" />
+                  <AdminStat label="Audio fallback" value={overview.attendance?.audio_only_events ?? 0} />
+                </div>
               </div>
             </div>
           </>
+        )}
+
+        {tab === 'telegram' && (
+          <div className="grid" style={{ gap: 12 }}>
+            <div className="telegramAssistantCard productSectionCard">
+              <div className="telegramAssistantHeader">
+                <div className="telegramAssistantMeta">
+                  <img className="telegramAvatar" src="/telegram-assistant-avatar.png" alt="DoskoLink Assistant" />
+                  <div>
+                    <div className="telegramEyebrow">Admin control</div>
+                    <div className="telegramTitle">Telegram для админа</div>
+                    <div className="small" style={{ marginTop: 6 }}>
+                      {telegramLink?.connected
+                        ? `Подключено: ${telegramSettings?.telegram_username ? '@' + telegramSettings.telegram_username : (telegramSettings?.telegram_chat_id || 'Telegram')} • связано ${formatDateTimeShort(telegramSettings?.telegram_linked_at)}`
+                        : 'Подключи Telegram из этого раздела. Здесь же виден статус webhook и команды бота.'}
+                    </div>
+                  </div>
+                </div>
+                <div className="telegramBadgeWrap">
+                  <div className="telegramRoleBadge">Роль: админ</div>
+                  <div className="telegramBotBadge">@{telegramBotUsername(telegramLink, telegramStatus)}</div>
+                </div>
+              </div>
+
+              <div className="telegramFeatureGrid">
+                {telegramFeatureBullets().map((item) => (
+                  <div key={item} className="telegramFeatureItem">{item}</div>
+                ))}
+              </div>
+
+              <div className="telegramCommandRow">
+                {telegramCommandChips(telegramStatus).slice(0, 18).map((cmd) => (
+                  <span key={cmd} className="telegramCommandChip">{cmd}</span>
+                ))}
+              </div>
+
+              <div className="telegramActionRow">
+                <button className="btn btnPrimary" onClick={openTelegramConnect} disabled={saving}>Подключить Telegram</button>
+                <button className="btn" onClick={() => copyTelegramStart(telegramLink)} disabled={saving || !telegramLink?.token}>Скопировать команду</button>
+                <button className="btn" onClick={() => refreshTelegramConnect(true)} disabled={saving}>Новая ссылка</button>
+                <button className="btn" onClick={syncTelegramInfra} disabled={saving}>Sync webhook</button>
+                <button className="btn" onClick={unlinkTelegramConnect} disabled={saving || !telegramLink?.connected}>Отвязать</button>
+              </div>
+
+              {telegramLink?.token ? (
+                <div className="telegramCodeGroup">
+                  <div className="label">Короткая команда для ручного запуска</div>
+                  <input className="input telegramCodeInput" value={telegramShortStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
+                  <div className="footerNote">Скопируй эту строку целиком и вставь её в чат с ботом. Просто /start без кода не подключит аккаунт.</div>
+                  <div className="label" style={{ marginTop: 10 }}>Полная команда</div>
+                  <input className="input telegramCodeInput" value={telegramStartCommand(telegramLink)} readOnly onFocus={(e) => e.target.select()} />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="telegramStatusGrid">
+              <AdminStat label="Bot token" value={telegramStatus?.token_configured ? 'OK' : 'Нет'} tone={telegramStatus?.token_configured ? 'success' : 'warn'} helper="DL_TELEGRAM_BOT_TOKEN" />
+              <AdminStat label="Public app URL" value={telegramStatus?.public_app_url ? 'OK' : 'Нет'} tone={telegramStatus?.public_app_url ? 'success' : 'warn'} helper={telegramStatus?.public_app_url || 'DL_PUBLIC_APP_URL'} />
+              <AdminStat label="Webhook" value={telegramWebhookLive ? 'Live' : 'Не совпадает'} tone={telegramWebhookLive ? 'success' : 'warn'} helper={telegramStatus?.desired_webhook_url || 'endpoint не собран'} />
+              <AdminStat label="Pending updates" value={telegramStatus?.webhook_info?.pending_update_count ?? 0} helper="очередь Telegram" />
+              <AdminStat label="Команды" value={telegramStatus?.commands_count ?? 0} helper={telegramStatus?.menu_button_type || 'menu button'} />
+            </div>
+
+            <div className="card adminInsightCard">
+              <div className="panelTitle">
+                <div>
+                  <div className="h3">Диагностика бота</div>
+                  <div className="small">Если бот не реагирует на команды, сначала смотри на webhook и последний текст ошибки.</div>
+                </div>
+              </div>
+              <div className="telegramDebugList">
+                <div className="adminListRow"><b>Webhook URL:</b> <span>{telegramStatus?.webhook_info?.url || 'не установлен'}</span></div>
+                <div className="adminListRow"><b>Ожидаемый URL:</b> <span>{telegramStatus?.desired_webhook_url || 'не сформирован'}</span></div>
+                <div className="adminListRow"><b>Последняя ошибка:</b> <span>{telegramStatus?.webhook_info?.last_error_message || 'нет'}</span></div>
+                <div className="adminListRow"><b>Последняя ошибка UTC:</b> <span>{telegramStatus?.webhook_info?.last_error_date ? formatDateTimeShort(new Date(Number(telegramStatus.webhook_info.last_error_date) * 1000)) : '—'}</span></div>
+                <div className="adminListRow"><b>Secret token:</b> <span>{telegramStatus?.secret_configured ? 'задан' : 'не задан'}</span></div>
+                <div className="adminListRow"><b>Команды:</b> <span>После sync бот получает setWebhook + setMyCommands + setMyDescription + setMyShortDescription + setChatMenuButton.</span></div>
+                <div className="adminListRow"><b>Short description:</b> <span>{telegramStatus?.bot_short_description || '—'}</span></div>
+                <div className="adminListRow"><b>Description:</b> <span>{telegramStatus?.bot_description || '—'}</span></div>
+                <div className="adminListRow"><b>Menu button:</b> <span>{telegramStatus?.menu_button_type || '—'}</span></div>
+              </div>
+            </div>
+          </div>
         )}
 
         {tab === 'moderation' && (
@@ -575,7 +755,7 @@ export default function Admin() {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <div>
                 <div style={{ fontWeight: 900, fontSize: 18 }}>Модерация профилей репетиторов</div>
-                <div className="sub">Проверка сертификатов и дипломов по ссылкам (Google Drive / облако).</div>
+                <div className="sub">Проверка документов, публикации и качества карточек.</div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <select className="select" value={tutorStatusFilter} onChange={e => setTutorStatusFilter(e.target.value)}>
@@ -589,16 +769,24 @@ export default function Admin() {
               </div>
             </div>
 
-            <div className="grid" style={{ gap: 10, marginTop: 10 }}>
-              {tutors.length === 0 ? <div className="small">Нет профилей.</div> : tutors.map(p => (
-                <div key={p.id} className="card" style={{ border: '1px solid var(--border)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+            <div className="adminMiniGrid" style={{ marginTop: 12 }}>
+              <AdminStat label="Всего" value={moderationMetrics.total} />
+              <AdminStat label="Pending" value={moderationMetrics.pending} tone="warn" />
+              <AdminStat label="Approved" value={moderationMetrics.approved} tone="success" />
+              <AdminStat label="Rejected" value={moderationMetrics.rejected} tone="warn" />
+              <AdminStat label="Published" value={moderationMetrics.published} tone="accent" />
+            </div>
+
+            <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+              {visibleTutors.length === 0 ? <div className="small">Нет профилей.</div> : visibleTutors.map(p => (
+                <div key={p.id} className="card adminDataCard">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                     <div style={{ flex: 1, minWidth: 260 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         <div style={{ fontWeight: 900 }}>{p.display_name}</div>
                         {p.founding_tutor ? <span className="pill badgeGold">Founding tutor</span> : null}
-                        <span className="pill">docs: {p.documents_status || 'draft'}</span>
-                        <span className="pill">published: {boolMark(p.is_published)}</span>
+                        <StatusPill tone={p.documents_status === 'approved' ? 'success' : p.documents_status === 'pending' ? 'warn' : 'default'}>docs: {p.documents_status || 'draft'}</StatusPill>
+                        <StatusPill tone={p.is_published ? 'success' : 'default'}>published: {boolMark(p.is_published)}</StatusPill>
                       </div>
                       <div className="small">{p.email} • {p.language} • {p.price_per_hour || 0} ₽/час</div>
                       <div className="small">Рейтинг: {Number(p.rating_avg || 0).toFixed(1)} ({p.rating_count || 0}) • занятий: {p.lessons_count || 0}</div>
@@ -614,20 +802,14 @@ export default function Admin() {
                       </div>
                     </div>
 
-                    <div className="grid" style={{ gap: 8, alignContent: 'start' }}>
+                    <div className="grid adminActionGrid">
                       <button className="btn btnPrimary" disabled={saving} onClick={() => updateTutor(p, { documents_status: 'approved', is_published: true })}>Одобрить</button>
                       <button className="btn" disabled={saving} onClick={() => {
                         const note = prompt('Причина отклонения (покажем репетитору):', p.documents_note || '')
-                        updateTutor(p, { documents_status: 'rejected', documents_note: note || '' })
+                        if (note === null) return
+                        updateTutor(p, { documents_status: 'rejected', documents_note: note, is_published: false })
                       }}>Отклонить</button>
                       <button className="btn" disabled={saving} onClick={() => updateTutor(p, { is_published: !p.is_published })}>{p.is_published ? 'Снять с публикации' : 'Опубликовать'}</button>
-                      <button className="btn" disabled={saving} onClick={() => updateTutor(p, { founding_tutor: !p.founding_tutor })}>{p.founding_tutor ? 'Убрать Founding' : 'Дать Founding'}</button>
-                      <button className="btn" disabled={saving} onClick={() => {
-                        const note = prompt('Комментарий для репетитора:', p.documents_note || '')
-                        if (note === null) return
-                        updateTutor(p, { documents_note: note })
-                      }}>Комментарий</button>
-                      <Link className="btn" to={`/tutor/${p.id}`}>Открыть карточку</Link>
                     </div>
                   </div>
                 </div>
@@ -638,35 +820,39 @@ export default function Admin() {
 
         {tab === 'catalog' && (
           <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
               <div>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>Управление категориями</div>
-                <div className="sub">Предметы, цели, уровни, классы, языки и экзамены для фильтров и формы профиля.</div>
+                <div style={{ fontWeight: 900, fontSize: 18 }}>Категории</div>
+                <div className="sub">Управление предметами, целями, уровнями и экзаменами.</div>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div className="small">Найдено: {visibleCatalog.length}</div>
+            </div>
+
+            <div className="grid filtersGrid" style={{ marginTop: 12 }}>
+              <div>
+                <div className="label">Тип</div>
                 <select className="select" value={catalogKind} onChange={e => setCatalogKind(e.target.value)}>
                   {CATALOG_KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
                 </select>
-                <button className="btn" onClick={loadActive}>Показать</button>
               </div>
-            </div>
-
-            <div className="row" style={{ marginTop: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: 220 }}>
-                <div className="label">Новый элемент</div>
-                <input className="input" value={catalogValue} onChange={e => setCatalogValue(e.target.value)} placeholder="Например: Математика" />
+              <div>
+                <div className="label">Новое значение</div>
+                <input className="input" value={catalogValue} onChange={e => setCatalogValue(e.target.value)} placeholder="Например, физика" />
               </div>
-              <div style={{ width: 120 }}>
+              <div>
                 <div className="label">Порядок</div>
                 <input className="input" type="number" value={catalogOrder} onChange={e => setCatalogOrder(e.target.value)} />
               </div>
-              <button className="btn btnPrimary" onClick={createCatalogItem} disabled={saving}>Добавить</button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
+                <button className="btn btnPrimary" disabled={saving} onClick={createCatalogItem}>Добавить</button>
+                <button className="btn" onClick={loadActive}>Обновить</button>
+              </div>
             </div>
 
-            <div className="grid" style={{ gap: 8, marginTop: 12 }}>
-              {catalog.length === 0 ? <div className="small">Нет элементов.</div> : catalog.map(item => (
-                <div key={item.id} className="card" style={{ border: '1px solid var(--border)', padding: 12 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+              {visibleCatalog.length === 0 ? <div className="small">Нет элементов.</div> : visibleCatalog.map(item => (
+                <div key={item.id} className="card adminDataCard">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
                       <div style={{ fontWeight: 800 }}>{item.value}</div>
                       <div className="small">kind: {item.kind} • order: {item.order_index} • active: {String(item.is_active)}</div>
@@ -677,11 +863,6 @@ export default function Admin() {
                         if (next === null) return
                         patchCatalogItem(item, { value: next })
                       }}>Переименовать</button>
-                      <button className="btn" onClick={() => {
-                        const next = prompt('Новый order_index', String(item.order_index ?? 0))
-                        if (next === null) return
-                        patchCatalogItem(item, { order_index: Number(next || 0) })
-                      }}>Порядок</button>
                       <button className="btn" onClick={() => patchCatalogItem(item, { is_active: !item.is_active })}>{item.is_active ? 'Выключить' : 'Включить'}</button>
                       <button className="btn" onClick={() => deleteCatalogItem(item)}>Удалить</button>
                     </div>
@@ -697,7 +878,7 @@ export default function Admin() {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontWeight: 900, fontSize: 18 }}>Жалобы / репорты</div>
-                <div className="sub">Просмотр и обработка жалоб пользователей/уроков.</div>
+                <div className="sub">Просмотр и обработка жалоб пользователей и уроков.</div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <select className="select" value={reportStatus} onChange={e => setReportStatus(e.target.value)}>
@@ -709,8 +890,8 @@ export default function Admin() {
               </div>
             </div>
             <div className="grid" style={{ gap: 10, marginTop: 10 }}>
-              {reports.length === 0 ? <div className="small">Нет репортов.</div> : reports.map(r => (
-                <div key={r.id} className="card" style={{ border: '1px solid var(--border)' }}>
+              {visibleReports.length === 0 ? <div className="small">Нет репортов.</div> : visibleReports.map(r => (
+                <div key={r.id} className="card adminDataCard">
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
                       <div style={{ fontWeight: 800 }}>#{r.id} • {r.status} • {r.category}</div>
@@ -737,7 +918,7 @@ export default function Admin() {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontWeight: 900, fontSize: 18 }}>Занятия</div>
-                <div className="sub">Отмена / done / перенос по slot_id.</div>
+                <div className="sub">Отмена, done, перенос и быстрый переход в комнату.</div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <select className="select" value={bookingStatus} onChange={e => setBookingStatus(e.target.value)}>
@@ -751,7 +932,7 @@ export default function Admin() {
             </div>
             <div className="grid" style={{ gap: 10, marginTop: 10 }}>
               {bookings.length === 0 ? <div className="small">Нет занятий.</div> : bookings.map(b => (
-                <div key={b.id} className="card" style={{ border: '1px solid var(--border)' }}>
+                <div key={b.id} className="card adminDataCard">
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
                       <div style={{ fontWeight: 800 }}>#{b.id} • {b.status}</div>
@@ -781,7 +962,7 @@ export default function Admin() {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontWeight: 900, fontSize: 18 }}>Отзывы</div>
-                <div className="sub">Удаление проблемных отзывов с пересчетом рейтинга.</div>
+                <div className="sub">Удаление проблемных отзывов с пересчётом рейтинга.</div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <select className="select" value={reviewStars} onChange={e => setReviewStars(e.target.value)}>
@@ -793,7 +974,7 @@ export default function Admin() {
             </div>
             <div className="grid" style={{ gap: 10, marginTop: 10 }}>
               {reviews.length === 0 ? <div className="small">Нет отзывов.</div> : reviews.map(r => (
-                <div key={r.id} className="card" style={{ border: '1px solid var(--border)' }}>
+                <div key={r.id} className="card adminDataCard">
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
                       <div style={{ fontWeight: 800 }}>#{r.id} • {r.stars}★</div>
@@ -815,14 +996,21 @@ export default function Admin() {
         {tab === 'users' && (
           <div className="card">
             <div style={{ fontWeight: 900, fontSize: 18 }}>Пользователи</div>
-            <div className="sub">Роли, блокировка, баланс (тестовый), сброс пароля.</div>
+            <div className="sub">Роли, блокировка, баланс и быстрые админ-действия.</div>
+            <div className="adminMiniGrid" style={{ marginTop: 12 }}>
+              <AdminStat label="Всего" value={usersMetrics.total} />
+              <AdminStat label="Tutors" value={usersMetrics.tutors} tone="accent" />
+              <AdminStat label="Students" value={usersMetrics.students} />
+              <AdminStat label="Admins" value={usersMetrics.admins} tone="success" />
+              <AdminStat label="Blocked" value={usersMetrics.blocked} tone="warn" />
+            </div>
             <div className="grid" style={{ gap: 10, marginTop: 10 }}>
               {users.length === 0 ? <div className="small">Нет пользователей.</div> : users.map(u => (
-                <div key={u.id} className="card" style={{ border: '1px solid var(--border)' }}>
+                <div key={u.id} className="card adminDataCard">
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
                       <div style={{ fontWeight: 800 }}>#{u.id} • {u.email}</div>
-                      <div className="small">role: {u.role} • active: {String(u.is_active)}</div>
+                      <div className="small">role: {u.role} • active: {String(u.is_active)} • last login: {u.last_login_at ? formatDateTimeShort(u.last_login_at) : '—'}</div>
                       <div className="small">баланс: {u.balance ?? 0} ₽ • доход: {u.earnings ?? 0} ₽</div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

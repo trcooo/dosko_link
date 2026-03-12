@@ -1365,3 +1365,286 @@ body::before{
   .lessonInlineActionBar .btn{width:100%}
   .productPageTitle{font-size:24px}
 }
+
+/* Search / selection redesign */
+.searchHeroWrap{
+  overflow:visible;
+}
+.searchHeroPanel{
+  margin-top:18px;
+  display:grid;
+  gap:14px;
+  padding:16px;
+  border-radius:22px;
+  border:1px solid rgba(255,255,255,.82);
+  background:rgba(255,255,255,.72);
+  box-shadow:0 16px 36px rgba(17,24,39,.08);
+}
+.searchStepsGrid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+}
+.searchStepCard{
+  display:flex;
+  gap:12px;
+  align-items:flex-start;
+  padding:14px;
+  border-radius:18px;
+  border:1px solid rgba(255,106,0,.15);
+  background:linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,247,240,.88));
+}
+.searchStepNum{
+  width:34px;
+  height:34px;
+  border-radius:999px;
+  display:grid;
+  place-items:center;
+  font-weight:900;
+  color:white;
+  background:linear-gradient(135deg, var(--orange), var(--orange2));
+  flex:0 0 auto;
+}
+.searchStepTitle{font-weight:900; font-size:15px}
+.searchQuickGrid{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+.searchQuickBlock{
+  border-radius:18px;
+  border:1px solid rgba(229,231,235,.9);
+  background:rgba(255,255,255,.9);
+  padding:14px;
+}
+.searchQuickTitle{font-weight:900; font-size:16px}
+.searchCatalogCard{
+  border-radius:26px;
+  border:1px solid rgba(255,255,255,.88);
+  background:linear-gradient(180deg, rgba(255,255,255,.98), rgba(255,249,244,.94));
+  box-shadow:0 22px 50px rgba(17,24,39,.08);
+}
+.searchFiltersGrid .input,
+.searchFiltersGrid .select{
+  background:rgba(255,255,255,.94);
+}
+.searchToggleLabel{
+  min-height:47px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:rgba(255,255,255,.92);
+  padding:0 12px;
+}
+.searchSortRow{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  margin-top:14px;
+}
+.searchSortChips{display:flex; gap:8px; flex-wrap:wrap}
+.searchSortChip{min-height:40px}
+.activeFilterRow{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
+.filterChip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  border-radius:999px;
+  border:1px solid rgba(255,106,0,.18);
+  background:rgba(255,247,237,.92);
+  color:#9a3d00;
+  padding:8px 12px;
+  cursor:pointer;
+}
+.filterChip b{font-size:16px; line-height:1}
+.resultsMetricsGrid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:12px;
+  margin-top:14px;
+}
+.resultMetricCard{
+  border-radius:18px;
+  border:1px solid rgba(229,231,235,.92);
+  background:rgba(255,255,255,.92);
+  padding:14px;
+  box-shadow:0 10px 24px rgba(15,23,42,.05);
+}
+.resultMetricValue{font-size:24px; font-weight:950; letter-spacing:-.03em; margin:6px 0}
+.recommendedPanel{
+  margin-top:16px;
+  padding:16px;
+  border-radius:24px;
+  border:1px solid rgba(255,106,0,.14);
+  background:linear-gradient(180deg, rgba(255,248,242,.94), rgba(255,255,255,.96));
+}
+.recommendedGrid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+  margin-top:12px;
+}
+.enhancedTutorGrid{gap:14px}
+.tutorVisualCard{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  padding:16px;
+  border-radius:24px;
+  border:1px solid rgba(229,231,235,.92);
+  background:linear-gradient(180deg, rgba(255,255,255,.97), rgba(250,250,250,.94));
+  box-shadow:0 16px 34px rgba(15,23,42,.06);
+  min-height:100%;
+  transition:transform .12s ease, box-shadow .18s ease, border-color .18s ease;
+}
+.tutorVisualCard:hover{
+  transform:translateY(-2px);
+  border-color:rgba(255,106,0,.22);
+  box-shadow:0 22px 44px rgba(15,23,42,.10);
+}
+.tutorVisualCard.featured{
+  border-color:rgba(255,106,0,.22);
+  background:linear-gradient(180deg, rgba(255,249,244,.98), rgba(255,255,255,.96));
+}
+.tutorVisualTop{
+  display:flex;
+  gap:12px;
+  justify-content:space-between;
+  align-items:flex-start;
+}
+.tutorIdentityWrap{display:flex; gap:12px; flex:1; min-width:0}
+.tutorVisualAvatar{
+  width:74px;
+  height:74px;
+  border-radius:22px;
+  object-fit:cover;
+  border:1px solid rgba(229,231,235,.9);
+  background:#fff;
+  flex:0 0 auto;
+}
+.tutorVisualAvatarFallback{
+  display:grid;
+  place-items:center;
+  font-size:22px;
+  font-weight:900;
+  color:white;
+  background:linear-gradient(135deg, var(--orange), var(--orange2));
+}
+.tutorIdentityRow{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+.tutorName{font-size:18px; font-weight:950; letter-spacing:-.02em}
+.tutorScoreRow{display:flex; gap:8px; flex-wrap:wrap; margin-top:10px}
+.tutorMetricPill{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:32px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(229,231,235,.9);
+  background:rgba(255,255,255,.92);
+  font-size:12px;
+  font-weight:800;
+}
+.tutorMetricPillStrong{
+  border-color:rgba(255,106,0,.22);
+  background:rgba(255,247,237,.92);
+  color:#9a3d00;
+}
+.tutorCTACol{display:grid; gap:8px; justify-items:end; align-content:start}
+.matchBadge{
+  padding:7px 10px;
+  border-radius:999px;
+  background:rgba(255,247,237,.92);
+  border:1px solid rgba(255,106,0,.2);
+  color:#9a3d00;
+  font-size:12px;
+  font-weight:900;
+}
+.tutorBio{
+  font-size:14px;
+  line-height:1.55;
+  color:#374151;
+}
+.tutorTagRow,
+.tutorReasonRow{display:flex; gap:8px; flex-wrap:wrap}
+.tutorReasonBox{
+  display:grid;
+  gap:8px;
+  border-radius:18px;
+  border:1px dashed rgba(255,106,0,.2);
+  background:rgba(255,250,245,.92);
+  padding:12px;
+}
+.tutorReasonChip{
+  display:inline-flex;
+  align-items:center;
+  min-height:30px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,106,0,.16);
+  background:white;
+  font-size:12px;
+  color:#9a3d00;
+}
+.searchEmptyState{
+  padding:24px;
+  border-radius:22px;
+  border:1px dashed rgba(255,106,0,.2);
+  background:rgba(255,250,245,.8);
+}
+
+/* Admin redesign */
+.adminActionBarWrap{justify-content:flex-end}
+.adminSearchInput{min-width:260px}
+.adminSidebarFooter{display:grid; gap:10px; margin-top:auto; padding-top:18px}
+.adminHeroStatsRow{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
+.adminOverviewGrid{display:grid; grid-template-columns:1.1fr .9fr; gap:12px}
+.adminInsightCard{display:grid; gap:12px}
+.adminMiniGrid{display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px}
+.adminQuickLinks{display:flex; gap:8px; flex-wrap:wrap}
+.adminStatValue{font-size:22px; font-weight:950; letter-spacing:-.03em; margin:6px 0}
+.adminStatTone-success{border-color:rgba(34,197,94,.22)!important; background:linear-gradient(180deg, rgba(240,253,244,.96), rgba(255,255,255,.94))!important}
+.adminStatTone-warn{border-color:rgba(245,158,11,.22)!important; background:linear-gradient(180deg, rgba(255,251,235,.96), rgba(255,255,255,.94))!important}
+.adminStatTone-accent{border-color:rgba(255,106,0,.2)!important; background:linear-gradient(180deg, rgba(255,247,237,.96), rgba(255,255,255,.94))!important}
+.statusPill{font-weight:800}
+.statusPill-success{border-color:rgba(34,197,94,.24); background:rgba(240,253,244,.96); color:#166534}
+.statusPill-warn{border-color:rgba(245,158,11,.24); background:rgba(255,251,235,.96); color:#92400e}
+.statusPill-default{border-color:rgba(229,231,235,.95); background:rgba(255,255,255,.96); color:#4b5563}
+.adminDataCard{border:1px solid rgba(229,231,235,.9)!important; box-shadow:0 12px 24px rgba(15,23,42,.04)}
+.adminActionGrid{gap:8px; align-content:start}
+.telegramStatusGrid{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px}
+.telegramDebugList{display:grid; gap:10px}
+.adminListRow{
+  display:flex;
+  gap:10px;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid rgba(229,231,235,.9);
+  background:rgba(255,255,255,.92);
+}
+
+@media (max-width: 1100px){
+  .searchStepsGrid,
+  .recommendedGrid,
+  .resultsMetricsGrid,
+  .telegramStatusGrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .adminOverviewGrid{grid-template-columns:1fr}
+  .adminMiniGrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media (max-width: 760px){
+  .searchQuickGrid,
+  .searchStepsGrid,
+  .recommendedGrid,
+  .resultsMetricsGrid,
+  .telegramStatusGrid,
+  .adminMiniGrid{grid-template-columns:1fr}
+  .tutorVisualTop,
+  .tutorIdentityWrap{flex-direction:column}
+  .tutorCTACol{justify-items:stretch}
+  .tutorCTACol .btn{width:100%}
+  .searchSortRow{align-items:stretch}
+  .searchSortChips{width:100%}
+  .searchSortChips .btn{flex:1 1 100%}
+}

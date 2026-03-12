@@ -9,6 +9,11 @@ function initials(name) {
   return s.split(/\s+/).slice(0, 2).map(x => x[0]?.toUpperCase()).join('') || 'DL'
 }
 
+function fmtPrice(v) {
+  const n = Number(v || 0)
+  return `${n} ₽/ч`
+}
+
 function Chip({ active, onClick, children }) {
   return (
     <button className={active ? 'btn btnPrimary' : 'btn'} onClick={onClick} type="button">
@@ -17,36 +22,89 @@ function Chip({ active, onClick, children }) {
   )
 }
 
-function TutorCard({ t, why = [] }) {
+function SortChip({ active, onClick, children }) {
   return (
-    <Link to={`/tutor/${t.id}`} className="tutorCard tutorCardRich">
-      {t.photo_url ? (
-        <img className="avatar avatarImg" src={t.photo_url} alt={t.display_name} />
-      ) : (
-        <div className="avatar">{initials(t.display_name)}</div>
-      )}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          <div style={{ fontWeight: 900 }}>{t.display_name}</div>
-          {t.founding_tutor ? <span className="pill badgeGold">Founding tutor</span> : null}
-          {t.is_verified ? <span className="pill badgeGreen">Проверен</span> : null}
-        </div>
-        <div className="small" style={{ marginTop: 4 }}>
-          {(t.subjects || []).join(', ') || '—'} • {t.price_per_hour || 0} ₽/час • {t.language || 'ru'}
-        </div>
-        <div className="small">★ {Number(t.rating_avg || 0).toFixed(1)} ({t.rating_count || 0}) • занятий: {t.lessons_count || 0}</div>
-        {!!(t.goals || []).length && (
-          <div className="pills" style={{ marginTop: 6 }}>
-            {(t.goals || []).slice(0, 3).map(g => <span key={g} className="pill">{g}</span>)}
+    <button type="button" className={active ? 'btn btnPrimary searchSortChip' : 'btn searchSortChip'} onClick={onClick}>
+      {children}
+    </button>
+  )
+}
+
+function ResultMetric({ label, value, helper }) {
+  return (
+    <div className="resultMetricCard">
+      <div className="small">{label}</div>
+      <div className="resultMetricValue">{value}</div>
+      {helper ? <div className="small">{helper}</div> : null}
+    </div>
+  )
+}
+
+function ActiveFilterChip({ label, onClear }) {
+  return (
+    <button type="button" className="filterChip" onClick={onClear}>
+      <span>{label}</span>
+      <b>×</b>
+    </button>
+  )
+}
+
+function TutorCard({ t, why = [], featured = false }) {
+  const goals = Array.isArray(t?.goals) ? t.goals.slice(0, 3) : []
+  const subjects = Array.isArray(t?.subjects) ? t.subjects.slice(0, 3) : []
+  const bio = String(t?.bio || '').trim()
+  const reasons = Array.isArray(why) ? why.slice(0, 4) : []
+
+  return (
+    <Link to={`/tutor/${t.id}`} className={`tutorVisualCard ${featured ? 'featured' : ''}`}>
+      <div className="tutorVisualTop">
+        <div className="tutorIdentityWrap">
+          {t.photo_url ? (
+            <img className="tutorVisualAvatar" src={t.photo_url} alt={t.display_name} />
+          ) : (
+            <div className="tutorVisualAvatar tutorVisualAvatarFallback">{initials(t.display_name)}</div>
+          )}
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="tutorIdentityRow">
+              <div className="tutorName">{t.display_name}</div>
+              {t.founding_tutor ? <span className="pill badgeGold">Founding tutor</span> : null}
+              {t.is_verified ? <span className="pill badgeGreen">Проверен</span> : null}
+            </div>
+            <div className="small" style={{ marginTop: 4 }}>
+              {subjects.join(', ') || 'Предметы не указаны'} • {t.language || 'ru'}
+            </div>
+            <div className="tutorScoreRow">
+              <div className="tutorMetricPill">★ {Number(t.rating_avg || 0).toFixed(1)}</div>
+              <div className="tutorMetricPill">{t.rating_count || 0} отзывов</div>
+              <div className="tutorMetricPill">{t.lessons_count || 0} занятий</div>
+              <div className="tutorMetricPill tutorMetricPillStrong">{fmtPrice(t.price_per_hour)}</div>
+            </div>
           </div>
-        )}
-        {Array.isArray(why) && why.length > 0 && (
-          <div className="small" style={{ marginTop: 6 }}>
-            <b>Почему подходит:</b> {why.slice(0, 3).join(' · ')}
-          </div>
-        )}
+        </div>
+
+        <div className="tutorCTACol">
+          <div className="matchBadge">{featured ? 'Top match' : 'Профиль'}</div>
+          <div className="btn btnPrimary">Выбрать</div>
+        </div>
       </div>
-      <div className="btn btnPrimary">Профиль</div>
+
+      {bio ? <div className="tutorBio">{bio.slice(0, 165)}{bio.length > 165 ? '…' : ''}</div> : null}
+
+      {!!goals.length && (
+        <div className="tutorTagRow">
+          {goals.map(g => <span key={g} className="pill">{g}</span>)}
+        </div>
+      )}
+
+      {!!reasons.length && (
+        <div className="tutorReasonBox">
+          <div className="small" style={{ fontWeight: 800 }}>Почему подходит</div>
+          <div className="tutorReasonRow">
+            {reasons.map((item) => <span key={item} className="tutorReasonChip">{item}</span>)}
+          </div>
+        </div>
+      )}
     </Link>
   )
 }
@@ -68,7 +126,7 @@ export default function Home() {
   const [language, setLanguage] = useState('')
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
-  const [minRating, setMinRating] = useState('') // client-side filter
+  const [minRating, setMinRating] = useState('')
   const [hasFreeSlots, setHasFreeSlots] = useState(false)
   const [availableFrom, setAvailableFrom] = useState('')
   const [availableTo, setAvailableTo] = useState('')
@@ -81,7 +139,7 @@ export default function Home() {
         const c = await apiFetch('/api/catalog')
         if (alive && c) setCatalog(c)
       } catch {
-        // fallback silently
+        // ignore catalog fallback for MVP
       }
     })()
     return () => { alive = false }
@@ -106,6 +164,7 @@ export default function Home() {
       if (sort) params.set('sort', sort)
       const data = await apiFetch(`/api/tutors?${params.toString()}`)
       setTutors(Array.isArray(data) ? data : [])
+
       try {
         const recParams = new URLSearchParams()
         if (q.trim()) recParams.set('q', q.trim())
@@ -144,6 +203,32 @@ export default function Home() {
   const featuredExams = (catalog.exams || catalog.goals || []).slice(0, 6)
   const featuredGrades = (catalog.grades || []).slice(0, 6)
 
+  const summary = useMemo(() => {
+    const arr = Array.isArray(visibleTutors) ? visibleTutors : []
+    const count = arr.length
+    const avgPrice = count ? Math.round(arr.reduce((s, t) => s + Number(t.price_per_hour || 0), 0) / count) : 0
+    const avgRating = count ? (arr.reduce((s, t) => s + Number(t.rating_avg || 0), 0) / count).toFixed(1) : '0.0'
+    const verified = arr.filter(t => t?.is_verified).length
+    return { count, avgPrice, avgRating, verified }
+  }, [visibleTutors])
+
+  const activeFilters = useMemo(() => {
+    const items = []
+    if (q) items.push({ label: `Запрос: ${q}`, clear: () => setQ('') })
+    if (subject) items.push({ label: `Предмет: ${subject}`, clear: () => setSubject('') })
+    if (goal) items.push({ label: `Цель: ${goal}`, clear: () => setGoal('') })
+    if (level) items.push({ label: `Уровень: ${level}`, clear: () => setLevel('') })
+    if (grade) items.push({ label: `Класс: ${grade}`, clear: () => setGrade('') })
+    if (language) items.push({ label: `Язык: ${language}`, clear: () => setLanguage('') })
+    if (minPrice) items.push({ label: `Цена от ${minPrice}`, clear: () => setMinPrice('') })
+    if (maxPrice) items.push({ label: `Цена до ${maxPrice}`, clear: () => setMaxPrice('') })
+    if (minRating) items.push({ label: `Рейтинг ${minRating}+`, clear: () => setMinRating('') })
+    if (hasFreeSlots) items.push({ label: 'Только со слотами', clear: () => setHasFreeSlots(false) })
+    if (availableFrom) items.push({ label: 'Время: от', clear: () => setAvailableFrom('') })
+    if (availableTo) items.push({ label: 'Время: до', clear: () => setAvailableTo('') })
+    return items
+  }, [q, subject, goal, level, grade, language, minPrice, maxPrice, minRating, hasFreeSlots, availableFrom, availableTo])
+
   function resetFilters() {
     setQ('')
     setSubject('')
@@ -162,58 +247,86 @@ export default function Home() {
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <div className="hero">
+      <div className="hero searchHeroWrap">
         <div className="heroInner">
-          <div className="heroBadge">DoskoLink • MVP v0 • без встроенных оплат</div>
-          <div className="heroTitle">Найдите репетитора и проведите урок прямо на платформе</div>
+          <div className="heroBadge">DoskoLink • подбор репетитора • уроки и Telegram в одной системе</div>
+          <div className="heroTitle">Найди репетитора быстрее и выбери по реальным критериям</div>
           <div className="heroSub">
-            Маркетплейс репетиторов → бронирование слота → комната урока (видео/чат/доска) → отзыв и рейтинг.
+            Удобный поиск, визуальные карточки, рекомендации по совпадению цели и быстрый переход к профилю, слоту и уроку.
           </div>
 
           {!me && (
             <div className="heroCtas">
               <Link className="btn btnPrimary" to="/register">Регистрация</Link>
               <Link className="btn" to="/login">Войти</Link>
-              <a className="btn btnGhost" href="#search">Выбрать репетитора</a>
+              <a className="btn btnGhost" href="#search">Перейти к подбору</a>
             </div>
           )}
 
-          <div style={{ marginTop: 16 }} className="grid" id="search">
-            <div className="card" style={{ background: 'rgba(255,255,255,.92)' }}>
-              <div style={{ fontWeight: 900, fontSize: 18 }}>1) Выбор предмета</div>
-              <div className="pills" style={{ marginTop: 10 }}>
-                {featuredSubjects.map(s => (
-                  <Chip key={s} active={subject === s} onClick={() => setSubject(subject === s ? '' : s)}>{s}</Chip>
-                ))}
+          <div className="searchHeroPanel" id="search">
+            <div className="searchStepsGrid">
+              <div className="searchStepCard">
+                <div className="searchStepNum">1</div>
+                <div>
+                  <div className="searchStepTitle">Выбери предмет</div>
+                  <div className="small">Сразу отфильтруй каталог по ключевой дисциплине.</div>
+                </div>
+              </div>
+              <div className="searchStepCard">
+                <div className="searchStepNum">2</div>
+                <div>
+                  <div className="searchStepTitle">Уточни класс или экзамен</div>
+                  <div className="small">ЕГЭ, ОГЭ, школьная программа или разговорная практика.</div>
+                </div>
+              </div>
+              <div className="searchStepCard">
+                <div className="searchStepNum">3</div>
+                <div>
+                  <div className="searchStepTitle">Смотри top matches</div>
+                  <div className="small">Платформа покажет лучших кандидатов и причины совпадения.</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="searchQuickGrid">
+              <div className="searchQuickBlock">
+                <div className="searchQuickTitle">Быстрый старт по предметам</div>
+                <div className="pills" style={{ marginTop: 10 }}>
+                  {featuredSubjects.map(s => (
+                    <Chip key={s} active={subject === s} onClick={() => setSubject(subject === s ? '' : s)}>{s}</Chip>
+                  ))}
+                </div>
               </div>
 
-              <div style={{ fontWeight: 900, fontSize: 18, marginTop: 14 }}>2) Класс / экзамен</div>
-              <div className="pills" style={{ marginTop: 10 }}>
-                {featuredGrades.map(g => (
-                  <Chip key={`g-${g}`} active={grade === g} onClick={() => setGrade(grade === g ? '' : g)}>{g} класс</Chip>
-                ))}
-                {featuredExams.map(x => (
-                  <Chip key={`e-${x}`} active={goal === x} onClick={() => setGoal(goal === x ? '' : x)}>{x}</Chip>
-                ))}
+              <div className="searchQuickBlock">
+                <div className="searchQuickTitle">Класс и экзамен</div>
+                <div className="pills" style={{ marginTop: 10 }}>
+                  {featuredGrades.map(g => (
+                    <Chip key={`g-${g}`} active={grade === g} onClick={() => setGrade(grade === g ? '' : g)}>{g} класс</Chip>
+                  ))}
+                  {featuredExams.map(x => (
+                    <Chip key={`e-${x}`} active={goal === x} onClick={() => setGoal(goal === x ? '' : x)}>{x}</Chip>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="card searchCatalogCard">
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <div>
-            <div className="h2">Каталог репетиторов</div>
-            <div className="sub">Сначала лучшие. Фильтры: предмет, цель, уровень, цена, рейтинг, язык и свободное время.</div>
+            <div className="h2">Подбор репетиторов</div>
+            <div className="sub">Фильтруй по предмету, цели, бюджету, рейтингу, языку и свободным слотам.</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={resetFilters}>Сбросить</button>
-            <button className="btn btnPrimary" onClick={loadTutors} disabled={loading}>{loading ? 'Ищем…' : 'Найти'}</button>
+            <button className="btn btnPrimary" onClick={loadTutors} disabled={loading}>{loading ? 'Ищем…' : 'Обновить подбор'}</button>
           </div>
         </div>
 
-        <div className="grid filtersGrid" style={{ marginTop: 12 }}>
+        <div className="grid filtersGrid searchFiltersGrid" style={{ marginTop: 12 }}>
           <div>
             <div className="label">Поиск</div>
             <input className="input" value={q} onChange={e => setQ(e.target.value)} placeholder="имя, предмет, ЕГЭ, разговорный…" />
@@ -272,15 +385,6 @@ export default function Home() {
             </select>
           </div>
           <div>
-            <div className="label">Сортировка</div>
-            <select className="select" value={sort} onChange={e => setSort(e.target.value)}>
-              <option value="best">Лучшие сначала</option>
-              <option value="price_asc">Цена ↑</option>
-              <option value="price_desc">Цена ↓</option>
-              <option value="newest">Новые</option>
-            </select>
-          </div>
-          <div>
             <div className="label">Свободное время: от</div>
             <input className="input" type="datetime-local" value={availableFrom} onChange={e => setAvailableFrom(e.target.value)} />
           </div>
@@ -288,38 +392,72 @@ export default function Home() {
             <div className="label">Свободное время: до</div>
             <input className="input" type="datetime-local" value={availableTo} onChange={e => setAvailableTo(e.target.value)} />
           </div>
+          <div>
+            <div className="label">Свободные слоты</div>
+            <label className="searchToggleLabel">
+              <input type="checkbox" checked={hasFreeSlots} onChange={e => setHasFreeSlots(e.target.checked)} />
+              <span>Только со свободными слотами</span>
+            </label>
+          </div>
         </div>
 
-        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <input type="checkbox" checked={hasFreeSlots} onChange={e => setHasFreeSlots(e.target.checked)} />
-            Только со свободными слотами
-          </label>
-          {!me && <span className="small">Чтобы бронировать, нужно войти как ученик.</span>}
+        <div className="searchSortRow">
+          <div className="small" style={{ fontWeight: 800 }}>Сортировка</div>
+          <div className="searchSortChips">
+            <SortChip active={sort === 'best'} onClick={() => setSort('best')}>Лучшие</SortChip>
+            <SortChip active={sort === 'price_asc'} onClick={() => setSort('price_asc')}>Цена ↑</SortChip>
+            <SortChip active={sort === 'price_desc'} onClick={() => setSort('price_desc')}>Цена ↓</SortChip>
+            <SortChip active={sort === 'newest'} onClick={() => setSort('newest')}>Новые</SortChip>
+          </div>
         </div>
+
+        {!!activeFilters.length && (
+          <div className="activeFilterRow">
+            {activeFilters.map((item) => <ActiveFilterChip key={item.label} label={item.label} onClear={item.clear} />)}
+          </div>
+        )}
 
         {err && <div className="footerNote">{err}</div>}
 
+        <div className="resultsMetricsGrid">
+          <ResultMetric label="Найдено" value={loading ? '…' : summary.count} helper="актуально по фильтрам" />
+          <ResultMetric label="Средняя цена" value={loading ? '…' : `${summary.avgPrice} ₽`} helper="по текущей выдаче" />
+          <ResultMetric label="Средний рейтинг" value={loading ? '…' : summary.avgRating} helper="среднее по списку" />
+          <ResultMetric label="Проверенные" value={loading ? '…' : summary.verified} helper="с подтверждённым профилем" />
+        </div>
+
         {Array.isArray(recommended) && recommended.length > 0 && (
-          <div className="card" style={{ marginTop: 12 }}>
-            <div style={{ fontWeight: 900 }}>Рекомендуемые репетиторы (почему)</div>
-            <div className="small">Подбор по совпадению цели/уровня/бюджета/свободных слотов и удержанию.</div>
-            <div className="grid" style={{ gap: 10, marginTop: 10 }}>
-              {recommended.map((it, idx) => <TutorCard key={`rec-${it?.tutor?.id || idx}`} t={it.tutor || {}} why={it.why || []} />)}
+          <div className="recommendedPanel">
+            <div className="panelTitle">
+              <div>
+                <div className="h3">Лучшие совпадения</div>
+                <div className="small">Подбор по цели, бюджету, рейтингу и наличию свободных слотов.</div>
+              </div>
+            </div>
+            <div className="recommendedGrid">
+              {recommended.slice(0, 3).map((it, idx) => (
+                <TutorCard key={`rec-${it?.tutor?.id || idx}`} t={it.tutor || {}} why={it.why || []} featured />
+              ))}
             </div>
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div style={{ fontWeight: 900 }}>Результаты</div>
-          <div className="small">{loading ? 'Загрузка…' : `${visibleTutors.length} репетиторов`}</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontWeight: 900, fontSize: 18 }}>Все результаты</div>
+            <div className="small">{!me ? 'Чтобы бронировать занятия, войди как ученик.' : 'Открой профиль, чтобы посмотреть слоты и детали преподавателя.'}</div>
+          </div>
+          <div className="small">{loading ? 'Загрузка…' : `${visibleTutors.length} карточек`}</div>
         </div>
 
-        <div className="tutorGrid" style={{ marginTop: 10 }}>
+        <div className="tutorGrid enhancedTutorGrid" style={{ marginTop: 10 }}>
           {loading ? (
             <div className="small">Загрузка…</div>
           ) : visibleTutors.length === 0 ? (
-            <div className="small">Репетиторы не найдены. Попробуй ослабить фильтры.</div>
+            <div className="searchEmptyState">
+              <div className="h3">Репетиторы не найдены</div>
+              <div className="small">Ослабь фильтры или сбрось ограничения по цене, рейтингу и времени.</div>
+            </div>
           ) : (
             visibleTutors.map(t => <TutorCard key={t.id} t={t} />)
           )}

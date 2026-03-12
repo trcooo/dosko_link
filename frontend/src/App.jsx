@@ -56,6 +56,7 @@ function NavBar() {
             <NavLink end className={navBtnClass} to="/" onClick={closeMenu}>{me?.role === 'tutor' ? 'Маркетплейс' : 'Поиск'}</NavLink>
             {me && me.role !== 'admin' && <NavLink className={navBtnClass} to="/dashboard" onClick={closeMenu}>{me.role === 'tutor' ? 'Кабинет репетитора' : 'Кабинет ученика'}</NavLink>}
             {me && me.role === 'admin' && <NavLink className={navBtnClass} to="/admin" onClick={closeMenu}>Админ-панель</NavLink>}
+            {me && me.role === 'admin' && <NavLink className={navBtnClass} to="/admin?tab=telegram" onClick={closeMenu}>Telegram</NavLink>}
             {me && me.role !== 'admin' && <NavLink className={navBtnClass} to="/learning" onClick={closeMenu}>{me.role === 'tutor' ? 'Ученики / обучение' : 'Учёба'}</NavLink>}
             {me && me.role !== 'admin' && (
               <NavLink className={navBtnClass} to="/wallet" onClick={closeMenu}>
