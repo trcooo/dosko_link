@@ -1,10 +1,16 @@
 FROM node:20-bullseye AS frontend-builder
 WORKDIR /app/frontend
-ENV NODE_ENV=development
+ENV NODE_ENV=development \
+    NPM_CONFIG_PRODUCTION=false
+
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --include=dev --no-fund --no-audit
+RUN npm ci --include=dev --no-fund --no-audit \
+ && node -e "require.resolve('vite'); require.resolve('@vitejs/plugin-react'); console.log('frontend deps ok')"
+
 COPY frontend/ ./
-RUN node ./node_modules/vite/bin/vite.js build
+RUN rm -f .npmrc \
+ && node -e "require.resolve('vite'); console.log('vite module ok')" \
+ && node --input-type=module -e "const vite = await import('vite'); await vite.build(); console.log('vite build ok')"
 
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
