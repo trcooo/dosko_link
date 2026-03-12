@@ -732,19 +732,51 @@ export default function Admin() {
               <div className="panelTitle">
                 <div>
                   <div className="h3">Диагностика бота</div>
-                  <div className="small">Если бот не реагирует на команды, сначала смотри на webhook и последний текст ошибки.</div>
+                  <div className="small">Если бот не реагирует на команды, здесь видно webhook, последний runtime-статус и недавние входящие апдейты.</div>
                 </div>
               </div>
               <div className="telegramDebugList">
                 <div className="adminListRow"><b>Webhook URL:</b> <span>{telegramStatus?.webhook_info?.url || 'не установлен'}</span></div>
                 <div className="adminListRow"><b>Ожидаемый URL:</b> <span>{telegramStatus?.desired_webhook_url || 'не сформирован'}</span></div>
-                <div className="adminListRow"><b>Последняя ошибка:</b> <span>{telegramStatus?.webhook_info?.last_error_message || 'нет'}</span></div>
+                <div className="adminListRow"><b>Последняя ошибка Telegram:</b> <span>{telegramStatus?.webhook_info?.last_error_message || 'нет'}</span></div>
                 <div className="adminListRow"><b>Последняя ошибка UTC:</b> <span>{telegramStatus?.webhook_info?.last_error_date ? formatDateTimeShort(new Date(Number(telegramStatus.webhook_info.last_error_date) * 1000)) : '—'}</span></div>
+                <div className="adminListRow"><b>Runtime mode:</b> <span>{telegramStatus?.processing_mode || '—'}</span></div>
+                <div className="adminListRow"><b>Последний inbound:</b> <span>{telegramStatus?.runtime?.last_update_at ? `${formatDateTimeShort(telegramStatus.runtime.last_update_at)} • ${telegramStatus?.runtime?.last_update_kind || 'update'}` : '—'}</span></div>
+                <div className="adminListRow"><b>Последняя команда:</b> <span>{telegramStatus?.runtime?.last_command || '—'}</span></div>
+                <div className="adminListRow"><b>Последний chat id:</b> <span>{telegramStatus?.runtime?.last_chat_id || '—'}</span></div>
+                <div className="adminListRow"><b>Runtime error:</b> <span>{telegramStatus?.runtime?.last_error || 'нет'}</span></div>
                 <div className="adminListRow"><b>Secret token:</b> <span>{telegramStatus?.secret_configured ? 'задан' : 'не задан'}</span></div>
                 <div className="adminListRow"><b>Команды:</b> <span>После sync бот получает setWebhook + setMyCommands + setMyDescription + setMyShortDescription + setChatMenuButton.</span></div>
                 <div className="adminListRow"><b>Short description:</b> <span>{telegramStatus?.bot_short_description || '—'}</span></div>
                 <div className="adminListRow"><b>Description:</b> <span>{telegramStatus?.bot_description || '—'}</span></div>
                 <div className="adminListRow"><b>Menu button:</b> <span>{telegramStatus?.menu_button_type || '—'}</span></div>
+              </div>
+            </div>
+
+            <div className="card adminInsightCard">
+              <div className="panelTitle">
+                <div>
+                  <div className="h3">Последние события Telegram</div>
+                  <div className="small">Живой хвост inbound/outbound событий. Если здесь пусто после команды, webhook до сервиса не доходит.</div>
+                </div>
+              </div>
+              <div className="telegramEventList">
+                {Array.isArray(telegramStatus?.recent_events) && telegramStatus.recent_events.length > 0 ? telegramStatus.recent_events.map((item, idx) => (
+                  <div key={`${item?.ts || 'evt'}-${idx}`} className="telegramEventItem">
+                    <div className="telegramEventMeta">
+                      <span className="pill">{item?.event || 'event'}</span>
+                      <span className="small">{formatDateTimeShort(item?.ts)}</span>
+                    </div>
+                    <div className="telegramEventMessage">{item?.message || '—'}</div>
+                    {item?.meta ? (
+                      <div className="telegramEventTags">
+                        {Object.entries(item.meta).map(([k, v]) => (
+                          <span key={`${idx}-${k}`} className="telegramEventTag">{k}: {String(v)}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                )) : <div className="small">Пока нет событий. Отправь боту /menu и нажми «Обновить».</div>}
               </div>
             </div>
           </div>

@@ -236,8 +236,8 @@ a{color:inherit; text-decoration:none}
 
 .tutorGrid{
   display:grid;
-  grid-template-columns: repeat(3, minmax(0,1fr));
-  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0,1fr));
+  gap: 14px;
 }
 .tutorCard{
   display:flex;
@@ -367,14 +367,15 @@ a{color:inherit; text-decoration:none}
 .h2{font-weight:900; font-size:22px}
 .h3{font-weight:900; font-size:18px}
 
-.adminShell{display:grid; grid-template-columns:280px 1fr; gap:12px; align-items:start}
-@media (max-width: 980px){.adminShell{grid-template-columns:1fr}}
+.adminShell{display:grid; grid-template-columns:320px minmax(0,1fr); gap:18px; align-items:start}
+@media (max-width: 1040px){.adminShell{grid-template-columns:1fr}}
 .adminSidebar{position:sticky; top:86px; min-height:calc(100vh - 110px); display:flex; flex-direction:column}
 @media (max-width:980px){.adminSidebar{position:static; min-height:auto}}
 .adminMenu{display:grid; gap:8px; margin-top:14px}
 .adminMenuBtn{justify-content:flex-start}
-.adminStatsGrid{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px}
-@media (max-width:980px){.adminStatsGrid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+.adminStatsGrid{display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px}
+@media (max-width:1180px){.adminStatsGrid{grid-template-columns:repeat(3,minmax(0,1fr));}}
+@media (max-width:780px){.adminStatsGrid{grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media (max-width:640px){.adminStatsGrid{grid-template-columns:1fr;}}
 .adminStat{
   border-radius:16px; border:1px solid rgba(229,231,235,.9); background:rgba(255,255,255,.92);
@@ -556,7 +557,7 @@ a{color:inherit; text-decoration:none}
 
 #app{min-height:100%}
 body{overflow-x:hidden}
-.container{width:min(1120px, 100%); padding:20px clamp(14px, 2vw, 24px) 28px}
+.container{width:min(1440px, 100%); padding:24px clamp(18px, 2.2vw, 30px) 34px}
 .card{overflow:hidden}
 
 .navToggle{
@@ -858,8 +859,8 @@ body::before{
 }
 
 .container.pageShell{
-  padding-top:26px;
-  padding-bottom:34px;
+  padding-top:28px;
+  padding-bottom:40px;
 }
 
 .nav{
@@ -869,7 +870,7 @@ body::before{
 }
 
 .navSurface{
-  max-width:1180px;
+  max-width:1480px;
   margin:0 auto;
   border-radius:24px;
   border:1px solid rgba(255,255,255,.78);
@@ -1231,7 +1232,7 @@ body::before{
 
 
 /* Unified design set: dashboard / admin / lesson */
-.productPage{gap:16px}
+.productPage{gap:18px}
 .productHeroCard,
 .productSectionCard,
 .productSidebarCard,
@@ -1373,8 +1374,8 @@ body::before{
 .searchHeroPanel{
   margin-top:18px;
   display:grid;
-  gap:14px;
-  padding:16px;
+  gap:16px;
+  padding:20px;
   border-radius:22px;
   border:1px solid rgba(255,255,255,.82);
   background:rgba(255,255,255,.72);
@@ -1406,7 +1407,7 @@ body::before{
   flex:0 0 auto;
 }
 .searchStepTitle{font-weight:900; font-size:15px}
-.searchQuickGrid{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+.searchQuickGrid{display:grid; grid-template-columns:1.2fr .8fr; gap:14px}
 .searchQuickBlock{
   border-radius:18px;
   border:1px solid rgba(229,231,235,.9);
@@ -1481,7 +1482,7 @@ body::before{
 .recommendedGrid{
   display:grid;
   grid-template-columns:repeat(3,minmax(0,1fr));
-  gap:12px;
+  gap:14px;
   margin-top:12px;
 }
 .enhancedTutorGrid{gap:14px}
@@ -1489,7 +1490,7 @@ body::before{
   display:flex;
   flex-direction:column;
   gap:12px;
-  padding:16px;
+  padding:18px;
   border-radius:24px;
   border:1px solid rgba(229,231,235,.92);
   background:linear-gradient(180deg, rgba(255,255,255,.97), rgba(250,250,250,.94));
@@ -1598,7 +1599,7 @@ body::before{
 .adminSearchInput{min-width:260px}
 .adminSidebarFooter{display:grid; gap:10px; margin-top:auto; padding-top:18px}
 .adminHeroStatsRow{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
-.adminOverviewGrid{display:grid; grid-template-columns:1.1fr .9fr; gap:12px}
+.adminOverviewGrid{display:grid; grid-template-columns:1.15fr .85fr; gap:16px}
 .adminInsightCard{display:grid; gap:12px}
 .adminMiniGrid{display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px}
 .adminQuickLinks{display:flex; gap:8px; flex-wrap:wrap}
@@ -1612,8 +1613,8 @@ body::before{
 .statusPill-default{border-color:rgba(229,231,235,.95); background:rgba(255,255,255,.96); color:#4b5563}
 .adminDataCard{border:1px solid rgba(229,231,235,.9)!important; box-shadow:0 12px 24px rgba(15,23,42,.04)}
 .adminActionGrid{gap:8px; align-content:start}
-.telegramStatusGrid{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px}
-.telegramDebugList{display:grid; gap:10px}
+.telegramStatusGrid{display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px}
+.telegramDebugList{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px}
 .adminListRow{
   display:flex;
   gap:10px;
@@ -1625,13 +1626,41 @@ body::before{
   background:rgba(255,255,255,.92);
 }
 
+.telegramEventList{display:grid; gap:10px}
+.telegramEventItem{
+  display:grid;
+  gap:8px;
+  padding:12px 14px;
+  border-radius:16px;
+  border:1px solid rgba(229,231,235,.92);
+  background:rgba(255,255,255,.94);
+}
+.telegramEventMeta{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap}
+.telegramEventMessage{font-weight:800; color:#111827}
+.telegramEventTags{display:flex; gap:8px; flex-wrap:wrap}
+.telegramEventTag{
+  display:inline-flex;
+  align-items:center;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,106,0,.14);
+  background:rgba(255,247,237,.92);
+  color:#9a3d00;
+  font-size:12px;
+}
+
+@media (max-width: 1280px){
+  .tutorGrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
 @media (max-width: 1100px){
   .searchStepsGrid,
   .recommendedGrid,
   .resultsMetricsGrid,
   .telegramStatusGrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .searchQuickGrid,
   .adminOverviewGrid{grid-template-columns:1fr}
   .adminMiniGrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .telegramDebugList{grid-template-columns:1fr}
 }
 @media (max-width: 760px){
   .searchQuickGrid,
@@ -1639,7 +1668,8 @@ body::before{
   .recommendedGrid,
   .resultsMetricsGrid,
   .telegramStatusGrid,
-  .adminMiniGrid{grid-template-columns:1fr}
+  .adminMiniGrid,
+  .tutorGrid{grid-template-columns:1fr}
   .tutorVisualTop,
   .tutorIdentityWrap{flex-direction:column}
   .tutorCTACol{justify-items:stretch}

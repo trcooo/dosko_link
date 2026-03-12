@@ -9,14 +9,16 @@ import secrets
 import smtplib
 import ssl
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import Response, FileResponse
@@ -33,7 +35,7 @@ from auth import (
     require_role,
     verify_password,
 )
-from db import get_session
+from db import get_session, engine
 from models import (
     Booking,
     Homework,
@@ -75,6 +77,46 @@ from models import (
 )
 
 app = FastAPI(title="DL MVP API", version="0.9.0")
+
+TELEGRAM_EVENT_LOG = deque(maxlen=80)
+TELEGRAM_RUNTIME: Dict[str, Any] = {
+    "last_update_at": None,
+    "last_update_kind": "",
+    "last_command": "",
+    "last_chat_id": "",
+    "last_error": "",
+    "last_error_at": None,
+}
+
+def _telegram_note(event: str, message: str, **meta: Any) -> None:
+    now = datetime.utcnow().isoformat()
+    entry = {"ts": now, "event": str(event or '').strip(), "message": str(message or '').strip()}
+    if meta:
+        safe_meta = {}
+        for key, value in meta.items():
+            if value is None:
+                continue
+            txt = str(value)
+            safe_meta[str(key)] = txt if len(txt) <= 220 else txt[:217] + '...'
+        if safe_meta:
+            entry["meta"] = safe_meta
+    TELEGRAM_EVENT_LOG.appendleft(entry)
+    print(f"[telegram/{entry['event']}] {entry['message']}")
+
+def _telegram_runtime_touch(kind: str = '', command: str = '', chat_id: str = '') -> None:
+    TELEGRAM_RUNTIME['last_update_at'] = datetime.utcnow().isoformat()
+    if kind:
+        TELEGRAM_RUNTIME['last_update_kind'] = str(kind)
+    if command:
+        TELEGRAM_RUNTIME['last_command'] = str(command)
+    if chat_id:
+        TELEGRAM_RUNTIME['last_chat_id'] = str(chat_id)
+
+def _telegram_runtime_error(err: Any) -> None:
+    TELEGRAM_RUNTIME['last_error'] = str(err or '').strip()
+    TELEGRAM_RUNTIME['last_error_at'] = datetime.utcnow().isoformat()
+    _telegram_note('error', str(err or 'unknown telegram error'))
+
 
 # -----------------
 # CORS
@@ -439,6 +481,7 @@ def _telegram_api_call(method: str, payload: Dict[str, Any]) -> None:
         with urllib.request.urlopen(req, timeout=8) as resp:
             resp.read()
     except Exception as e:
+        _telegram_runtime_error(f'{method}: {e}')
         print(f"[telegram/{method}/error] {e}")
 
 
@@ -459,6 +502,7 @@ def _telegram_api_json(method: str, payload: Optional[Dict[str, Any]] = None) ->
             raw = resp.read().decode("utf-8") or "{}"
             return json.loads(raw)
     except Exception as e:
+        _telegram_runtime_error(f'{method}: {e}')
         print(f"[telegram/{method}/json_error] {e}")
         return {"ok": False, "description": str(e)}
 
@@ -566,6 +610,9 @@ def _telegram_status_payload() -> Dict[str, Any]:
         "bot_description": str((bot_description or {}).get('description') or ''),
         "bot_short_description": str((bot_short_description or {}).get('short_description') or ''),
         "menu_button_type": str((menu_button or {}).get('type') or ''),
+        "runtime": dict(TELEGRAM_RUNTIME),
+        "recent_events": list(TELEGRAM_EVENT_LOG)[:20],
+        "processing_mode": 'background',
     }
 
 
@@ -672,6 +719,7 @@ def _telegram_send_binary_attachment(chat_id: str, filename: str, data: bytes, m
 
 def _send_telegram(chat_id: str, text_body: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
     if not chat_id:
+        _telegram_note('send_skipped', 'telegram message skipped: empty chat_id')
         print(f"[notify/telegram] chat_id={chat_id} body={text_body[:180]}")
         return
     payload: Dict[str, Any] = {
@@ -681,6 +729,7 @@ def _send_telegram(chat_id: str, text_body: str, reply_markup: Optional[Dict[str
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    _telegram_note('outbound', 'sendMessage queued', chat_id=chat_id, text=str(text_body or '')[:120])
     _telegram_api_call("sendMessage", payload)
 
 
@@ -2486,35 +2535,142 @@ def admin_telegram_sync(
 
 
 
-@app.post('/api/integrations/telegram/webhook')
-async def telegram_webhook(
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    expected_secret = str(os.getenv('DL_TELEGRAM_WEBHOOK_SECRET') or '').strip()
-    if expected_secret:
-        got = str(request.headers.get('x-telegram-bot-api-secret-token') or '').strip()
-        if got != expected_secret:
-            raise HTTPException(403, 'bad telegram webhook secret')
-
+def _telegram_process_update(update: Dict[str, Any]) -> None:
     try:
-        update = await request.json()
-    except Exception:
-        return {'ok': True}
+        with Session(engine) as session:
+            callback_query = (update or {}).get('callback_query') or {}
+            if callback_query:
+                callback_id = str(callback_query.get('id') or '').strip()
+                data = str(callback_query.get('data') or '').strip()
+                callback_message = callback_query.get('message') or {}
+                callback_chat = callback_message.get('chat') or {}
+                chat_id = str(callback_chat.get('id') or '').strip()
+                chat_type = str(callback_chat.get('type') or '').strip()
+                from_user = callback_query.get('from') or {}
+                tg_username = str(from_user.get('username') or '').strip()
+                tg_first_name = str(from_user.get('first_name') or '').strip()
 
-    callback_query = (update or {}).get('callback_query') or {}
-    if callback_query:
-        callback_id = str(callback_query.get('id') or '').strip()
-        data = str(callback_query.get('data') or '').strip()
-        callback_message = callback_query.get('message') or {}
-        callback_chat = callback_message.get('chat') or {}
-        chat_id = str(callback_chat.get('id') or '').strip()
-        chat_type = str(callback_chat.get('type') or '').strip()
-        from_user = callback_query.get('from') or {}
-        tg_username = str(from_user.get('username') or '').strip()
-        tg_first_name = str(from_user.get('first_name') or '').strip()
+                _telegram_runtime_touch(kind='callback_query', command=data or 'callback_query', chat_id=chat_id)
+                _telegram_note('inbound', 'callback query received', chat_id=chat_id, data=data or '—')
 
-        if chat_id and chat_type in {'private', ''}:
+                if chat_id and chat_type in {'private', ''}:
+                    user = _telegram_find_user_by_chat(session, chat_id)
+                    if user:
+                        if tg_username and tg_username != str(getattr(user, 'telegram_username', '') or ''):
+                            user.telegram_username = tg_username
+                            session.add(user)
+                            session.commit()
+                        if tg_first_name and tg_first_name != str(getattr(user, 'telegram_first_name', '') or ''):
+                            user.telegram_first_name = tg_first_name
+                            session.add(user)
+                            session.commit()
+
+                    if not user:
+                        _telegram_answer_callback(callback_id, 'Сначала подключите Telegram к DoskoLink.', show_alert=True)
+                        _telegram_reply_not_linked(chat_id)
+                        _telegram_note('handled', 'callback rejected: not linked', chat_id=chat_id)
+                        return
+
+                    m_cb = re.match(r'^booking:(confirm|decline):(\d+)$', data)
+                    if m_cb:
+                        action = str(m_cb.group(1) or '').strip()
+                        booking_id = str(m_cb.group(2) or '').strip()
+                        _telegram_apply_attendance_status(chat_id, user, session, 'confirmed' if action == 'confirm' else 'declined', booking_id)
+                        _telegram_answer_callback(callback_id, 'Статус обновлён.')
+                        _telegram_note('handled', f'booking callback: {action}', chat_id=chat_id, booking_id=booking_id, user_id=getattr(user, 'id', None))
+                        return
+
+                    hw_files_cb = re.match(r'^hw:files:(\d+)$', data)
+                    if hw_files_cb:
+                        homework_id = int(hw_files_cb.group(1))
+                        h = session.get(Homework, homework_id)
+                        if not h:
+                            _telegram_answer_callback(callback_id, 'ДЗ не найдено', show_alert=True)
+                            return
+                        if _telegram_role_key(user) == 'tutor' and int(getattr(h, 'tutor_user_id', 0) or 0) != int(user.id):
+                            _telegram_answer_callback(callback_id, 'Это ДЗ не относится к вашему аккаунту', show_alert=True)
+                            return
+                        _telegram_send_homework_files(chat_id, h, session)
+                        _telegram_answer_callback(callback_id, 'Файлы отправлены в чат')
+                        _telegram_note('handled', 'homework files sent', chat_id=chat_id, homework_id=homework_id, user_id=getattr(user, 'id', None))
+                        return
+
+                    hw_cb = re.match(r'^hw:(check|revise):(\d+)$', data)
+                    if hw_cb:
+                        action = str(hw_cb.group(1) or '').strip()
+                        homework_id = int(hw_cb.group(2))
+                        _telegram_begin_homework_review(chat_id, user, session, homework_id, action)
+                        _telegram_answer_callback(callback_id, 'Жду текстовый фидбек')
+                        _telegram_note('handled', f'homework review started: {action}', chat_id=chat_id, homework_id=homework_id, user_id=getattr(user, 'id', None))
+                        return
+
+                    if data in {'notify:on', 'notify:off'}:
+                        _telegram_set_notifications(chat_id, user, session, enabled=(data == 'notify:on'))
+                        _telegram_answer_callback(callback_id, 'Настройки уведомлений обновлены')
+                        _telegram_note('handled', f'notifications set: {data}', chat_id=chat_id, user_id=getattr(user, 'id', None))
+                        return
+
+                    if data == 'menu:help':
+                        _send_telegram(chat_id, _telegram_help_text(_telegram_role_key(user)), reply_markup=_telegram_menu_keyboard(user))
+                        _telegram_answer_callback(callback_id, 'Открываю помощь')
+                        _telegram_note('handled', 'help menu opened', chat_id=chat_id, user_id=getattr(user, 'id', None))
+                        return
+
+                    _telegram_answer_callback(callback_id, 'Действие пока не поддерживается.', show_alert=False)
+                    _telegram_note('handled', 'unsupported callback action', chat_id=chat_id, data=data)
+                    return
+
+                return
+
+            message = (update or {}).get('message') or (update or {}).get('edited_message') or {}
+            chat = message.get('chat') or {}
+            chat_id = str(chat.get('id') or '').strip()
+            chat_type = str(chat.get('type') or '').strip()
+            text = str(message.get('text') or '').strip()
+            from_user = message.get('from') or {}
+            tg_username = str(from_user.get('username') or '').strip()
+            tg_first_name = str(from_user.get('first_name') or '').strip()
+
+            if not chat_id or chat_type not in {'private', ''}:
+                return
+
+            command = ''
+            arg = ''
+            if text.startswith('/'):
+                m = re.match(r'^(?P<cmd>/[A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(?P<arg>.*))?$', text, re.S)
+                if m:
+                    command = str(m.group('cmd') or '').lower()
+                    arg = str(m.group('arg') or '').strip()
+
+            token_candidate = ''
+            if command == '/start' and arg:
+                token_candidate = arg
+                if token_candidate.lower().startswith('dl '):
+                    token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
+                token_candidate = re.sub(r'\s+', '', token_candidate)
+            elif not command and (text.startswith('dl_') or text.startswith('DL_') or text.lower().startswith('dl ')):
+                token_candidate = text
+                if token_candidate.lower().startswith('dl '):
+                    token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
+                token_candidate = re.sub(r'\s+', '', token_candidate)
+            else:
+                m_start = re.match(r'^/start_?(dl_[A-Za-z0-9_\-]+)$', text, re.I)
+                if m_start:
+                    token_candidate = str(m_start.group(1) or '').strip()
+            if token_candidate.lower().startswith('dl '):
+                token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
+            token_candidate = str(token_candidate or '').strip()
+
+            _telegram_runtime_touch(kind='message', command=command or text[:48] or 'message', chat_id=chat_id)
+            _telegram_note('inbound', 'message received', chat_id=chat_id, text=(command or text[:120] or '—'))
+
+            if token_candidate:
+                ok, reply, linked_user = _telegram_link_user_from_token(session, token_candidate, chat_id, username=tg_username, first_name=tg_first_name)
+                kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url(linked_user)}]]} if linked_user and _dashboard_url(linked_user) else None
+                _send_telegram(chat_id, reply, reply_markup=kb)
+                _telegram_note('handled', 'telegram link attempt', chat_id=chat_id, success=ok, user_id=getattr(linked_user, 'id', None))
+                return
+
             user = _telegram_find_user_by_chat(session, chat_id)
             if user:
                 if tg_username and tg_username != str(getattr(user, 'telegram_username', '') or ''):
@@ -2526,216 +2682,148 @@ async def telegram_webhook(
                     session.add(user)
                     session.commit()
 
+            review_state = _telegram_homework_review_state(session, user.id) if user else None
+            if user and review_state:
+                if command == '/skip':
+                    _telegram_finish_homework_review(chat_id, user, session, skip_text=True)
+                    _telegram_note('handled', 'homework review skipped', chat_id=chat_id, user_id=getattr(user, 'id', None))
+                    return
+                if command == '/cancel_review':
+                    _telegram_cancel_homework_review(chat_id, user, session)
+                    _telegram_note('handled', 'homework review cancelled', chat_id=chat_id, user_id=getattr(user, 'id', None))
+                    return
+                if text and not command:
+                    _telegram_finish_homework_review(chat_id, user, session, feedback_text=text, skip_text=False)
+                    _telegram_note('handled', 'homework review finished', chat_id=chat_id, user_id=getattr(user, 'id', None))
+                    return
+
+            if not command and text:
+                quick_map = {
+                    '📅 сегодня': '/today',
+                    '⏭ ближайшее': '/next',
+                    '🗓 расписание': '/schedule',
+                    '📚 домашки': '/homework',
+                    '📥 входящие дз': '/homework_inbox',
+                    '📈 прогресс': '/progress',
+                    '💳 баланс': '/balance',
+                    '👥 ученики сегодня': '/students_today',
+                    '🧾 кто я': '/whoami',
+                    '🏠 кабинет': '/link',
+                    '👋 помощь': '/help',
+                    '🔔 уведомления': '/notifications',
+                    '✅ подтвердить': '/confirm',
+                    '⚠️ не смогу': '/decline',
+                    '📊 статистика': '/stats',
+                    '🤖 статус бота': '/tgstatus',
+                    '🔄 sync бота': '/syncbot',
+                }
+                command = quick_map.get(text.strip().lower(), '')
+
+            if command in {'/start', '/help', '/menu'}:
+                if user:
+                    _send_telegram(chat_id, _telegram_welcome_text(user), reply_markup=_telegram_menu_keyboard(user))
+                else:
+                    _telegram_reply_not_linked(chat_id)
+                _telegram_note('handled', f'handled {command or "/menu"}', chat_id=chat_id, user_id=getattr(user, 'id', None))
+                return
+
             if not user:
-                _telegram_answer_callback(callback_id, 'Сначала подключите Telegram к DoskoLink.', show_alert=True)
                 _telegram_reply_not_linked(chat_id)
-                return {'ok': True}
+                _telegram_note('handled', 'rejected command: not linked', chat_id=chat_id, command=command or text[:48])
+                return
 
-            m_cb = re.match(r'^booking:(confirm|decline):(\d+)$', data)
-            if m_cb:
-                action = str(m_cb.group(1) or '').strip()
-                booking_id = str(m_cb.group(2) or '').strip()
-                _telegram_apply_attendance_status(chat_id, user, session, 'confirmed' if action == 'confirm' else 'declined', booking_id)
-                _telegram_answer_callback(callback_id, 'Статус обновлён.')
-                return {'ok': True}
-
-            hw_files_cb = re.match(r'^hw:files:(\d+)$', data)
-            if hw_files_cb:
-                homework_id = int(hw_files_cb.group(1))
-                h = session.get(Homework, homework_id)
-                if not h:
-                    _telegram_answer_callback(callback_id, 'ДЗ не найдено', show_alert=True)
-                    return {'ok': True}
-                if _telegram_role_key(user) == 'tutor' and int(getattr(h, 'tutor_user_id', 0) or 0) != int(user.id):
-                    _telegram_answer_callback(callback_id, 'Это ДЗ не относится к вашему аккаунту', show_alert=True)
-                    return {'ok': True}
-                _telegram_send_homework_files(chat_id, h, session)
-                _telegram_answer_callback(callback_id, 'Файлы отправлены в чат')
-                return {'ok': True}
-
-            hw_cb = re.match(r'^hw:(check|revise):(\d+)$', data)
-            if hw_cb:
-                action = str(hw_cb.group(1) or '').strip()
-                homework_id = int(hw_cb.group(2))
-                _telegram_begin_homework_review(chat_id, user, session, homework_id, action)
-                _telegram_answer_callback(callback_id, 'Жду текстовый фидбек')
-                return {'ok': True}
-
-            if data in {'notify:on', 'notify:off'}:
-                _telegram_set_notifications(chat_id, user, session, enabled=(data == 'notify:on'))
-                _telegram_answer_callback(callback_id, 'Настройки уведомлений обновлены')
-                return {'ok': True}
-
-            if data == 'menu:help':
+            if command == '/today':
+                _telegram_send_today_like(chat_id, user, session, day_offset=0)
+            elif command == '/tomorrow':
+                _telegram_send_today_like(chat_id, user, session, day_offset=1)
+            elif command in {'/next'}:
+                _telegram_send_next(chat_id, user, session)
+            elif command in {'/schedule', '/lessons'}:
+                _telegram_send_schedule(chat_id, user, session)
+            elif command == '/students_today':
+                _telegram_send_students_today(chat_id, user, session)
+            elif command == '/homework':
+                _telegram_send_homework(chat_id, user, session)
+            elif command == '/homework_inbox':
+                _telegram_send_homework_inbox(chat_id, user, session)
+            elif command == '/progress':
+                _telegram_send_progress(chat_id, user, session)
+            elif command == '/balance':
+                _telegram_send_balance(chat_id, user, session)
+            elif command == '/notifications':
+                _telegram_send_notifications(chat_id, user)
+            elif command == '/notify_on':
+                _telegram_set_notifications(chat_id, user, session, True)
+            elif command == '/notify_off':
+                _telegram_set_notifications(chat_id, user, session, False)
+            elif command == '/confirm':
+                _telegram_apply_attendance_status(chat_id, user, session, 'confirmed', arg)
+            elif command == '/decline':
+                _telegram_apply_attendance_status(chat_id, user, session, 'declined', arg)
+            elif command == '/support':
+                _send_telegram(chat_id, _telegram_support_text(user), reply_markup=_telegram_menu_keyboard(user))
+            elif command == '/stats':
+                if _telegram_role_key(user) == 'admin':
+                    _telegram_send_admin_stats(chat_id, session)
+                else:
+                    _send_telegram(chat_id, 'Команда /stats доступна только администратору. Остальные команды подстраиваются по вашей роли автоматически.', reply_markup=_telegram_menu_keyboard(user))
+            elif command == '/tgstatus':
+                if _telegram_role_key(user) == 'admin':
+                    _send_telegram(chat_id, _telegram_admin_status_text(session), reply_markup=_telegram_menu_keyboard(user))
+                else:
+                    _send_telegram(chat_id, 'Команда /tgstatus доступна только администратору.', reply_markup=_telegram_menu_keyboard(user))
+            elif command == '/syncbot':
+                if _telegram_role_key(user) == 'admin':
+                    sync_data = _telegram_sync_infra()
+                    _send_telegram(chat_id, str(sync_data.get('summary') or 'Синхронизация выполнена.') + '\n\n' + _telegram_admin_status_text(session), reply_markup=_telegram_menu_keyboard(user))
+                else:
+                    _send_telegram(chat_id, 'Команда /syncbot доступна только администратору.', reply_markup=_telegram_menu_keyboard(user))
+            elif command == '/whoami':
+                dash = _dashboard_url(user)
+                _send_telegram(chat_id, _telegram_whoami_text(user, session), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]} if dash else _telegram_menu_keyboard(user))
+            elif command in {'/link', '/cabinet'}:
+                _telegram_send_link(chat_id, user)
+            elif command == '/unlink':
+                _telegram_unlink(chat_id, user, session)
+            elif command == '/cancel_review':
+                _telegram_cancel_homework_review(chat_id, user, session)
+            else:
                 _send_telegram(chat_id, _telegram_help_text(_telegram_role_key(user)), reply_markup=_telegram_menu_keyboard(user))
-                _telegram_answer_callback(callback_id, 'Открываю помощь')
-                return {'ok': True}
 
-            _telegram_answer_callback(callback_id, 'Действие пока не поддерживается.', show_alert=False)
-            return {'ok': True}
+            _telegram_note('handled', f'handled {command or "text"}', chat_id=chat_id, user_id=getattr(user, 'id', None))
+    except Exception as e:
+        _telegram_runtime_error(f'update failed: {e}')
+        _telegram_note('traceback', traceback.format_exc()[:1800])
 
+
+@app.post('/api/integrations/telegram/webhook')
+async def telegram_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    expected_secret = str(os.getenv('DL_TELEGRAM_WEBHOOK_SECRET') or '').strip()
+    if expected_secret:
+        got = str(request.headers.get('x-telegram-bot-api-secret-token') or '').strip()
+        if got != expected_secret:
+            _telegram_note('webhook_denied', 'bad telegram webhook secret')
+            raise HTTPException(403, 'bad telegram webhook secret')
+
+    try:
+        update = await request.json()
+    except Exception as e:
+        _telegram_runtime_error(f'invalid webhook payload: {e}')
         return {'ok': True}
 
+    update_id = (update or {}).get('update_id')
+    callback_query = (update or {}).get('callback_query') or {}
     message = (update or {}).get('message') or (update or {}).get('edited_message') or {}
-    chat = message.get('chat') or {}
+    chat = (callback_query.get('message') or {}).get('chat') or (message.get('chat') or {})
     chat_id = str(chat.get('id') or '').strip()
-    chat_type = str(chat.get('type') or '').strip()
-    text = str(message.get('text') or '').strip()
-    from_user = message.get('from') or {}
-    tg_username = str(from_user.get('username') or '').strip()
-    tg_first_name = str(from_user.get('first_name') or '').strip()
-
-    if not chat_id or chat_type not in {'private', ''}:
-        return {'ok': True}
-
-    command = ''
-    arg = ''
-    if text.startswith('/'):
-        m = re.match(r'^(?P<cmd>/[A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(?P<arg>.*))?$', text, re.S)
-        if m:
-            command = str(m.group('cmd') or '').lower()
-            arg = str(m.group('arg') or '').strip()
-
-    token_candidate = ''
-    if command == '/start' and arg:
-        token_candidate = arg
-        # Accept manual variants like "/start dl 66577" or extra spaces/newlines.
-        if token_candidate.lower().startswith('dl '):
-            token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
-        token_candidate = re.sub(r'\s+', '', token_candidate)
-    elif not command and (text.startswith('dl_') or text.startswith('DL_') or text.lower().startswith('dl ')):
-        token_candidate = text
-        if token_candidate.lower().startswith('dl '):
-            token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
-        token_candidate = re.sub(r'\s+', '', token_candidate)
-    else:
-        m_start = re.match(r'^/start_?(dl_[A-Za-z0-9_\-]+)$', text, re.I)
-        if m_start:
-            token_candidate = str(m_start.group(1) or '').strip()
-    if token_candidate.lower().startswith('dl '):
-        token_candidate = 'dl_' + '_'.join(part for part in token_candidate[3:].split() if part)
-    token_candidate = str(token_candidate or '').strip()
-
-    if token_candidate:
-        ok, reply, linked_user = _telegram_link_user_from_token(session, token_candidate, chat_id, username=tg_username, first_name=tg_first_name)
-        kb = {'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': _dashboard_url(linked_user)}]]} if linked_user and _dashboard_url(linked_user) else None
-        _send_telegram(chat_id, reply, reply_markup=kb)
-        return {'ok': True}
-
-    user = _telegram_find_user_by_chat(session, chat_id)
-    if user:
-        if tg_username and tg_username != str(getattr(user, 'telegram_username', '') or ''):
-            user.telegram_username = tg_username
-            session.add(user)
-            session.commit()
-        if tg_first_name and tg_first_name != str(getattr(user, 'telegram_first_name', '') or ''):
-            user.telegram_first_name = tg_first_name
-            session.add(user)
-            session.commit()
-
-    review_state = _telegram_homework_review_state(session, user.id) if user else None
-    if user and review_state:
-        if command == '/skip':
-            _telegram_finish_homework_review(chat_id, user, session, skip_text=True)
-            return {'ok': True}
-        if command == '/cancel_review':
-            _telegram_cancel_homework_review(chat_id, user, session)
-            return {'ok': True}
-        if text and not command:
-            _telegram_finish_homework_review(chat_id, user, session, feedback_text=text, skip_text=False)
-            return {'ok': True}
-
-    if not command and text:
-        quick_map = {
-            '📅 сегодня': '/today',
-            '⏭ ближайшее': '/next',
-            '🗓 расписание': '/schedule',
-            '📚 домашки': '/homework',
-            '📥 входящие дз': '/homework_inbox',
-            '📈 прогресс': '/progress',
-            '💳 баланс': '/balance',
-            '👥 ученики сегодня': '/students_today',
-            '🧾 кто я': '/whoami',
-            '🏠 кабинет': '/link',
-            '👋 помощь': '/help',
-            '🔔 уведомления': '/notifications',
-            '✅ подтвердить': '/confirm',
-            '⚠️ не смогу': '/decline',
-            '📊 статистика': '/stats',
-            '🤖 статус бота': '/tgstatus',
-            '🔄 sync бота': '/syncbot',
-        }
-        command = quick_map.get(text.strip().lower(), '')
-
-    if command in {'/start', '/help', '/menu'}:
-        if user:
-            _send_telegram(chat_id, _telegram_welcome_text(user), reply_markup=_telegram_menu_keyboard(user))
-        else:
-            _telegram_reply_not_linked(chat_id)
-        return {'ok': True}
-
-    if not user:
-        _telegram_reply_not_linked(chat_id)
-        return {'ok': True}
-
-    if command == '/today':
-        _telegram_send_today_like(chat_id, user, session, day_offset=0)
-    elif command == '/tomorrow':
-        _telegram_send_today_like(chat_id, user, session, day_offset=1)
-    elif command in {'/next'}:
-        _telegram_send_next(chat_id, user, session)
-    elif command in {'/schedule', '/lessons'}:
-        _telegram_send_schedule(chat_id, user, session)
-    elif command == '/students_today':
-        _telegram_send_students_today(chat_id, user, session)
-    elif command == '/homework':
-        _telegram_send_homework(chat_id, user, session)
-    elif command == '/homework_inbox':
-        _telegram_send_homework_inbox(chat_id, user, session)
-    elif command == '/progress':
-        _telegram_send_progress(chat_id, user, session)
-    elif command == '/balance':
-        _telegram_send_balance(chat_id, user, session)
-    elif command == '/notifications':
-        _telegram_send_notifications(chat_id, user)
-    elif command == '/notify_on':
-        _telegram_set_notifications(chat_id, user, session, True)
-    elif command == '/notify_off':
-        _telegram_set_notifications(chat_id, user, session, False)
-    elif command == '/confirm':
-        _telegram_apply_attendance_status(chat_id, user, session, 'confirmed', arg)
-    elif command == '/decline':
-        _telegram_apply_attendance_status(chat_id, user, session, 'declined', arg)
-    elif command == '/support':
-        _send_telegram(chat_id, _telegram_support_text(user), reply_markup=_telegram_menu_keyboard(user))
-    elif command == '/stats':
-        if _telegram_role_key(user) == 'admin':
-            _telegram_send_admin_stats(chat_id, session)
-        else:
-            _send_telegram(chat_id, 'Команда /stats доступна только администратору. Остальные команды подстраиваются по вашей роли автоматически.', reply_markup=_telegram_menu_keyboard(user))
-    elif command == '/tgstatus':
-        if _telegram_role_key(user) == 'admin':
-            _send_telegram(chat_id, _telegram_admin_status_text(session), reply_markup=_telegram_menu_keyboard(user))
-        else:
-            _send_telegram(chat_id, 'Команда /tgstatus доступна только администратору.', reply_markup=_telegram_menu_keyboard(user))
-    elif command == '/syncbot':
-        if _telegram_role_key(user) == 'admin':
-            sync_data = _telegram_sync_infra()
-            _send_telegram(chat_id, str(sync_data.get('summary') or 'Синхронизация выполнена.') + '\n\n' + _telegram_admin_status_text(session), reply_markup=_telegram_menu_keyboard(user))
-        else:
-            _send_telegram(chat_id, 'Команда /syncbot доступна только администратору.', reply_markup=_telegram_menu_keyboard(user))
-    elif command == '/whoami':
-        dash = _dashboard_url(user)
-        _send_telegram(chat_id, _telegram_whoami_text(user, session), reply_markup={'inline_keyboard': [[{'text': 'Открыть кабинет', 'url': dash}]]} if dash else _telegram_menu_keyboard(user))
-    elif command in {'/link', '/cabinet'}:
-        _telegram_send_link(chat_id, user)
-    elif command == '/unlink':
-        _telegram_unlink(chat_id, user, session)
-    elif command == '/cancel_review':
-        _telegram_cancel_homework_review(chat_id, user, session)
-    else:
-        _send_telegram(chat_id, _telegram_help_text(_telegram_role_key(user)), reply_markup=_telegram_menu_keyboard(user))
-
+    kind = 'callback_query' if callback_query else ('message' if message else 'update')
+    command_text = str((message or {}).get('text') or (callback_query.get('data') or '') or '').strip()
+    _telegram_runtime_touch(kind=kind, command=command_text[:48], chat_id=chat_id)
+    _telegram_note('webhook', 'update queued', update_id=update_id, kind=kind, chat_id=chat_id or '—', text=command_text[:120] or '—')
+    background_tasks.add_task(_telegram_process_update, update)
     return {'ok': True}
 
 
