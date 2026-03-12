@@ -2,9 +2,9 @@ FROM node:20-bullseye AS frontend-builder
 WORKDIR /app/frontend
 ENV NODE_ENV=development
 COPY frontend/package*.json ./
-RUN npm ci --include=dev
+RUN npm ci --include=dev && npm install -g vite@5.4.2
 COPY frontend/ ./
-RUN npm run build
+RUN rm -f .npmrc && npm run build
 
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
