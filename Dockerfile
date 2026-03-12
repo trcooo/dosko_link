@@ -1,28 +1,29 @@
 FROM node:20-bullseye AS frontend-builder
 WORKDIR /app/frontend
 
-# Force a clean, reproducible install of frontend deps from lockfile.
-# Railway/CI environments may have npm production flags set globally,
-# so we explicitly include devDependencies (Vite and the React plugin).
+# Force dev dependencies for the frontend build and isolate npm cache.
+# Railway was failing on npm ci with an internal npm error, so we use npm install here.
+ENV NODE_ENV=development \
+    NPM_CONFIG_PRODUCTION=false \
+    NPM_CONFIG_CACHE=/tmp/.npm
+
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --include=dev --no-fund --no-audit \
+RUN npm install --include=dev --no-fund --no-audit \
  && node -e "require.resolve('vite'); require.resolve('@vitejs/plugin-react'); console.log('frontend deps ok')"
 
 COPY frontend/ ./
-RUN rm -f .npmrc \
- && node -e "require.resolve('vite'); console.log('vite module ok')" \
- && node --input-type=module -e "const vite = await import('vite'); await vite.build(); console.log('vite build ok')" \
+RUN node scripts/build.mjs \
  && test -f dist/index.html
 
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=8000
 
 WORKDIR /app/backend
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ ./
 RUN mkdir -p /app/backend/static
