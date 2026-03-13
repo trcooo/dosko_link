@@ -140,6 +140,566 @@ function listCountLabel(count, one, many) {
   return `${count} ${count === 1 ? one : many}`
 }
 
+
+function adminDateKey(d) {
+  const dt = new Date(d)
+  const y = dt.getFullYear()
+  const m = String(dt.getMonth() + 1).padStart(2, '0')
+  const day = String(dt.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function adminStartOfDay(d) {
+  const dt = new Date(d)
+  dt.setHours(0, 0, 0, 0)
+  return dt
+}
+
+function adminEndOfDay(d) {
+  const dt = new Date(d)
+  dt.setHours(23, 59, 59, 999)
+  return dt
+}
+
+function adminFormatTime(v) {
+  if (!v) return '—'
+  try { return new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) } catch { return '—' }
+}
+
+function buildAdminMonthCells(monthDate) {
+  const first = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
+  const startWeekday = (first.getDay() + 6) % 7
+  const gridStart = new Date(first)
+  gridStart.setDate(first.getDate() - startWeekday)
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart)
+    d.setDate(gridStart.getDate() + i)
+    return d
+  })
+}
+
+function parseHm(hm) {
+  const raw = String(hm || '18:00')
+  const [h, m] = raw.split(':')
+  return [Number(h || 18), Number(m || 0)]
+}
+
+function withHm(date, hm) {
+  const [h, m] = parseHm(hm)
+  const dt = new Date(date)
+  dt.setHours(h, m, 0, 0)
+  return dt
+}
+
+function weekdayIndexMon(date) {
+  return (new Date(date).getDay() + 6) % 7
+}
+
+function statusToneFromValue(status) {
+  const value = String(status || '').toLowerCase()
+  if (['done', 'confirmed', 'active', 'paid'].includes(value)) return 'success'
+  if (['cancelled', 'declined'].includes(value)) return 'warn'
+  return 'default'
+}
+
+function CalendarLegendChip({ tone = 'default', children }) {
+  return <span className={`adminCalendarLegendChip ${tone}`}>{children}</span>
+}
+
+function BookingsCalendarPanel({ token, nav, q, bookingStatus, refreshSignal = 0 }) {
+  const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+  const baseMonth = useMemo(() => {
+    const d = new Date()
+    return new Date(d.getFullYear(), d.getMonth(), 1)
+  }, [])
+  const [monthOffset, setMonthOffset] = useState(0)
+  const [selectedDayKey, setSelectedDayKey] = useState(adminDateKey(new Date()))
+  const [calendarBookings, setCalendarBookings] = useState([])
+  const [calendarSlots, setCalendarSlots] = useState([])
+  const [recurringSeries, setRecurringSeries] = useState([])
+  const [users, setUsers] = useState([])
+  const [localErr, setLocalErr] = useState('')
+  const [localNote, setLocalNote] = useState('')
+  const [loadingCalendar, setLoadingCalendar] = useState(false)
+  const [busyAction, setBusyAction] = useState(false)
+  const [seriesForm, setSeriesForm] = useState({
+    student_user_id: '',
+    tutor_user_id: '',
+    weekdays: [1, 3],
+    time_hm: '18:00',
+    duration_minutes: 60,
+    weeks_ahead: 8,
+    auto_attendance_confirm: true,
+  })
+
+  const monthDate = useMemo(() => new Date(baseMonth.getFullYear(), baseMonth.getMonth() + monthOffset, 1), [baseMonth, monthOffset])
+  const monthCells = useMemo(() => buildAdminMonthCells(monthDate), [monthDate])
+  const rangeStart = useMemo(() => adminStartOfDay(monthCells[0]), [monthCells])
+  const rangeEnd = useMemo(() => adminEndOfDay(monthCells[monthCells.length - 1]), [monthCells])
+
+  const userById = useMemo(() => {
+    const map = new Map()
+    for (const u of users) map.set(Number(u.id), u)
+    return map
+  }, [users])
+
+  const searchNeedle = String(q || '').trim().toLowerCase()
+
+  const filteredSeries = useMemo(() => {
+    const arr = Array.isArray(recurringSeries) ? recurringSeries : []
+    if (!searchNeedle) return arr
+    return arr.filter((item) => [item.tutor_email, item.student_email, item.id].join(' ').toLowerCase().includes(searchNeedle))
+  }, [recurringSeries, searchNeedle])
+
+  const filteredSlots = useMemo(() => {
+    const arr = Array.isArray(calendarSlots) ? calendarSlots : []
+    if (!searchNeedle) return arr
+    return arr.filter((slot) => {
+      const tutor = userById.get(Number(slot.tutor_user_id))
+      return [slot.id, slot.status, tutor?.email || ''].join(' ').toLowerCase().includes(searchNeedle)
+    })
+  }, [calendarSlots, searchNeedle, userById])
+
+  const filteredBookings = useMemo(() => {
+    const arr = Array.isArray(calendarBookings) ? calendarBookings : []
+    if (!searchNeedle) return arr
+    return arr.filter((item) => [item.tutor_email, item.student_email, item.id, item.status].join(' ').toLowerCase().includes(searchNeedle))
+  }, [calendarBookings, searchNeedle])
+
+  useEffect(() => {
+    const todayKey = adminDateKey(new Date())
+    const availableKeys = new Set(monthCells.map(adminDateKey))
+    if (!availableKeys.has(selectedDayKey)) {
+      setSelectedDayKey(availableKeys.has(todayKey) ? todayKey : adminDateKey(monthDate))
+    }
+  }, [monthCells, monthDate, selectedDayKey])
+
+  async function loadCalendarData() {
+    setLoadingCalendar(true)
+    setLocalErr('')
+    try {
+      const bookingParams = new URLSearchParams()
+      bookingParams.set('limit', '500')
+      bookingParams.set('date_from', rangeStart.toISOString())
+      bookingParams.set('date_to', rangeEnd.toISOString())
+      if (bookingStatus) bookingParams.set('status', bookingStatus)
+      if (q) bookingParams.set('q', q)
+
+      const slotParams = new URLSearchParams()
+      slotParams.set('date_from', rangeStart.toISOString())
+      slotParams.set('date_to', rangeEnd.toISOString())
+
+      const [bookingData, slotData, recurringData, usersData] = await Promise.all([
+        apiFetch(`/api/admin/bookings?${bookingParams.toString()}`, { token }),
+        apiFetch(`/api/slots/me?${slotParams.toString()}`, { token }),
+        apiFetch('/api/recurring/bookings', { token }),
+        apiFetch('/api/admin/users', { token }),
+      ])
+
+      setCalendarBookings(Array.isArray(bookingData) ? bookingData : [])
+      setCalendarSlots(Array.isArray(slotData) ? slotData : [])
+      setRecurringSeries(Array.isArray(recurringData?.items) ? recurringData.items : [])
+      setUsers(Array.isArray(usersData) ? usersData : [])
+    } catch (e) {
+      setLocalErr(e.message || 'Не удалось загрузить календарь занятий')
+    } finally {
+      setLoadingCalendar(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return
+    loadCalendarData()
+  }, [token, monthDate, bookingStatus, q, refreshSignal])
+
+  async function patchLocalBooking(booking, patch) {
+    setBusyAction(true)
+    setLocalErr('')
+    setLocalNote('')
+    try {
+      await apiFetch(`/api/admin/bookings/${booking.id}`, { method: 'PATCH', token, body: patch })
+      setLocalNote(`Занятие #${booking.id} обновлено.`)
+      await loadCalendarData()
+    } catch (e) {
+      setLocalErr(e.message || 'Не удалось обновить занятие')
+    } finally {
+      setBusyAction(false)
+    }
+  }
+
+  async function createSeries() {
+    if (!seriesForm.student_user_id || !seriesForm.tutor_user_id) {
+      setLocalErr('Выбери ученика и репетитора для серии.')
+      return
+    }
+    if (!Array.isArray(seriesForm.weekdays) || seriesForm.weekdays.length === 0) {
+      setLocalErr('Выбери хотя бы один день недели.')
+      return
+    }
+    setBusyAction(true)
+    setLocalErr('')
+    setLocalNote('')
+    try {
+      const body = {
+        student_user_id: Number(seriesForm.student_user_id),
+        tutor_user_id: Number(seriesForm.tutor_user_id),
+        weekdays: (seriesForm.weekdays || []).map(Number),
+        time_hm: seriesForm.time_hm || '18:00',
+        duration_minutes: Number(seriesForm.duration_minutes || 60),
+        weeks_ahead: Number(seriesForm.weeks_ahead || 8),
+        auto_attendance_confirm: Boolean(seriesForm.auto_attendance_confirm),
+      }
+      const out = await apiFetch('/api/recurring/bookings', { method: 'POST', token, body })
+      const bookedCount = Array.isArray(out?.booked_booking_ids) ? out.booked_booking_ids.length : 0
+      setLocalNote(`Серия создана. Забронировано занятий: ${bookedCount}.`)
+      await loadCalendarData()
+    } catch (e) {
+      setLocalErr(e.message || 'Не удалось создать recurring-серию')
+    } finally {
+      setBusyAction(false)
+    }
+  }
+
+  async function patchSeries(seriesId, patch, successText) {
+    setBusyAction(true)
+    setLocalErr('')
+    setLocalNote('')
+    try {
+      const out = await apiFetch(`/api/recurring/bookings/${seriesId}`, { method: 'PATCH', token, body: patch })
+      const bookedCount = Array.isArray(out?.booked_booking_ids) ? out.booked_booking_ids.length : 0
+      setLocalNote(successText || (bookedCount ? `Серия обновлена. Добавлено занятий: ${bookedCount}.` : 'Серия обновлена.'))
+      await loadCalendarData()
+    } catch (e) {
+      setLocalErr(e.message || 'Не удалось обновить серию')
+    } finally {
+      setBusyAction(false)
+    }
+  }
+
+  const monthBookingCount = filteredBookings.length
+  const openSlotsCount = filteredSlots.filter(x => String(x.status || '').toLowerCase() === 'open').length
+  const activeSeriesCount = filteredSeries.filter(x => String(x.status || '').toLowerCase() === 'active').length
+  const pendingAttendanceCount = filteredBookings.filter(x => String(x.student_attendance_status || '') === 'pending' || String(x.tutor_attendance_status || '') === 'pending').length
+
+  const recurringOccurrences = useMemo(() => {
+    const out = []
+    const start = adminStartOfDay(rangeStart)
+    const end = adminEndOfDay(rangeEnd)
+    for (const series of filteredSeries) {
+      if (String(series.status || '').toLowerCase() === 'cancelled') continue
+      const weekdaysSet = new Set(Array.isArray(series.weekdays) ? series.weekdays.map(Number) : [])
+      let cursor = new Date(start)
+      while (cursor <= end) {
+        if (weekdaysSet.has(weekdayIndexMon(cursor))) {
+          const startsAt = withHm(cursor, series.time_hm || '18:00')
+          const createdAt = series.created_at ? new Date(series.created_at) : null
+          if (!createdAt || startsAt >= createdAt) {
+            out.push({
+              key: `${series.id}-${adminDateKey(cursor)}`,
+              series_id: series.id,
+              date_key: adminDateKey(cursor),
+              starts_at: startsAt.toISOString(),
+              time_hm: series.time_hm || '18:00',
+              status: series.status || 'active',
+              tutor_email: series.tutor_email || '',
+              student_email: series.student_email || '',
+              duration_minutes: Number(series.duration_minutes || 60),
+            })
+          }
+        }
+        cursor.setDate(cursor.getDate() + 1)
+      }
+    }
+    return out
+  }, [filteredSeries, rangeStart, rangeEnd])
+
+  const bookingsByDay = useMemo(() => {
+    const map = new Map()
+    for (const booking of filteredBookings) {
+      const key = adminDateKey(booking.starts_at || booking.created_at)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(booking)
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => new Date(a.starts_at || a.created_at) - new Date(b.starts_at || b.created_at))
+    }
+    return map
+  }, [filteredBookings])
+
+  const slotsByDay = useMemo(() => {
+    const map = new Map()
+    for (const slot of filteredSlots) {
+      const key = adminDateKey(slot.starts_at)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(slot)
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
+    }
+    return map
+  }, [filteredSlots])
+
+  const recurringByDay = useMemo(() => {
+    const map = new Map()
+    for (const item of recurringOccurrences) {
+      const key = item.date_key
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(item)
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
+    }
+    return map
+  }, [recurringOccurrences])
+
+  const selectedDayBookings = bookingsByDay.get(selectedDayKey) || []
+  const selectedDaySlots = slotsByDay.get(selectedDayKey) || []
+  const selectedDayRecurring = recurringByDay.get(selectedDayKey) || []
+
+  const studentOptions = useMemo(() => users.filter(u => u.role === 'student'), [users])
+  const tutorOptions = useMemo(() => users.filter(u => u.role === 'tutor' || u.role === 'admin'), [users])
+
+  function toggleWeekday(day) {
+    setSeriesForm((prev) => {
+      const set = new Set((prev.weekdays || []).map(Number))
+      if (set.has(day)) set.delete(day)
+      else set.add(day)
+      return { ...prev, weekdays: Array.from(set).sort((a, b) => a - b) }
+    })
+  }
+
+  return (
+    <div className="grid" style={{ gap: 16 }}>
+      <div className="card adminCalendarSummaryCard">
+        <div className="panelTitle">
+          <div>
+            <div className="h3">Календарь занятий и recurring-уроков</div>
+            <div className="small">Полный обзор месяца: реальные уроки, открытые слоты, ожидаемые повторяющиеся занятия и быстрые действия без ручного поиска по карточкам.</div>
+          </div>
+          <div className="adminQuickLinks">
+            <button className="btn" onClick={() => setMonthOffset(v => v - 1)}>← Месяц назад</button>
+            <button className="btn" onClick={() => setMonthOffset(0)}>Текущий месяц</button>
+            <button className="btn" onClick={() => setMonthOffset(v => v + 1)}>Следующий →</button>
+          </div>
+        </div>
+        <div className="adminCalendarStatsRow">
+          <AdminStat label="Занятия в окне" value={monthBookingCount} helper={`${bookingStatus || 'all'} • ${monthDate.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}`} tone="accent" />
+          <AdminStat label="Open slots" value={openSlotsCount} helper="свободные окна репетиторов" />
+          <AdminStat label="Recurring series" value={activeSeriesCount} helper="активные серии" tone="success" />
+          <AdminStat label="Pending attendance" value={pendingAttendanceCount} helper="нужны подтверждения" tone="warn" />
+        </div>
+        <div className="adminCalendarLegendRow">
+          <CalendarLegendChip tone="booked">Урок</CalendarLegendChip>
+          <CalendarLegendChip tone="slot">Свободный слот</CalendarLegendChip>
+          <CalendarLegendChip tone="recurring">Recurring</CalendarLegendChip>
+          <CalendarLegendChip tone="done">Done / оплачено</CalendarLegendChip>
+        </div>
+        {localErr ? <div className="footerNote">{localErr}</div> : null}
+        {localNote ? <div className="footerNote">{localNote}</div> : null}
+      </div>
+
+      <div className="adminCalendarWorkspace">
+        <div className="card adminCalendarMainCard">
+          <div className="calendarToolbar adminCalendarToolbarWide">
+            <div className="adminCalendarToolbarTitle">
+              {monthDate.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}
+            </div>
+            <div className="adminCalendarToolbarActions">
+              <button className="btn" onClick={loadCalendarData} disabled={loadingCalendar || busyAction}>Обновить сетку</button>
+              <StatusPill tone={loadingCalendar ? 'warn' : 'success'}>{loadingCalendar ? 'загрузка…' : 'календарь синхронизирован'}</StatusPill>
+            </div>
+          </div>
+
+          <div className="adminCalendarMonthGrid">
+            {weekdays.map((day) => <div key={day} className="adminCalendarHeadCell">{day}</div>)}
+            {monthCells.map((day) => {
+              const key = adminDateKey(day)
+              const dayBookings = bookingsByDay.get(key) || []
+              const daySlots = slotsByDay.get(key) || []
+              const dayRecurring = recurringByDay.get(key) || []
+              const inMonth = day.getMonth() === monthDate.getMonth()
+              const isToday = key === adminDateKey(new Date())
+              const isSelected = key === selectedDayKey
+              return (
+                <button
+                  type="button"
+                  key={key}
+                  onClick={() => setSelectedDayKey(key)}
+                  className={`adminCalendarCell ${inMonth ? '' : 'out'} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+                >
+                  <div className="adminCalendarCellTop">
+                    <span className="adminCalendarDateNum">{day.getDate()}</span>
+                    <span className="small">{dayBookings.length + daySlots.length + dayRecurring.length}</span>
+                  </div>
+                  <div className="adminCalendarCellBody">
+                    {dayBookings.slice(0, 2).map((item) => (
+                      <div key={`booking-${item.id}`} className={`adminCalendarItem booking ${item.status === 'done' || item.payment_status === 'paid' ? 'done' : item.status === 'cancelled' ? 'warn' : ''}`}>
+                        <span>{adminFormatTime(item.starts_at)}</span>
+                        <span>#{item.id}</span>
+                      </div>
+                    ))}
+                    {dayRecurring.slice(0, Math.max(0, 3 - Math.min(dayBookings.length, 2))).map((item) => (
+                      <div key={`series-${item.key}`} className={`adminCalendarItem recurring ${String(item.status || '') === 'paused' ? 'muted' : ''}`}>
+                        <span>{item.time_hm}</span>
+                        <span>серия</span>
+                      </div>
+                    ))}
+                    {daySlots.slice(0, dayBookings.length ? 0 : 1).map((item) => (
+                      <div key={`slot-${item.id}`} className="adminCalendarItem slot">
+                        <span>{adminFormatTime(item.starts_at)}</span>
+                        <span>slot</span>
+                      </div>
+                    ))}
+                    {(dayBookings.length + daySlots.length + dayRecurring.length) > 3 ? <div className="lessonMore">+{dayBookings.length + daySlots.length + dayRecurring.length - 3}</div> : null}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="adminCalendarSidebar">
+          <div className="card adminCalendarSideCard">
+            <div className="panelTitle">
+              <div>
+                <div className="h3">День: {selectedDayKey}</div>
+                <div className="small">Повестка дня, свободные окна и повторяющиеся уроки.</div>
+              </div>
+            </div>
+            <div className="adminAgendaList">
+              {selectedDayBookings.length === 0 && selectedDaySlots.length === 0 && selectedDayRecurring.length === 0 ? <div className="small">На выбранный день событий нет.</div> : null}
+
+              {selectedDayBookings.map((item) => (
+                <div key={`agenda-booking-${item.id}`} className="adminAgendaItem booking">
+                  <div>
+                    <div className="adminAgendaTitle">Урок #{item.id} • {adminFormatTime(item.starts_at)}–{adminFormatTime(item.ends_at)}</div>
+                    <div className="small">{item.tutor_email} → {item.student_email}</div>
+                    <div className="adminAgendaMetaRow">
+                      <StatusPill tone={statusToneFromValue(item.status)}>{item.status}</StatusPill>
+                      <StatusPill tone={statusToneFromValue(item.payment_status)}>{item.payment_status}</StatusPill>
+                      {item.recurring_series_id ? <StatusPill tone="default">Series #{item.recurring_series_id}</StatusPill> : null}
+                    </div>
+                  </div>
+                  <div className="adminAgendaActions">
+                    <button className="btn" onClick={() => nav(`/room/booking-${item.id}`)}>Комната</button>
+                    {item.status !== 'cancelled' ? <button className="btn" onClick={() => patchLocalBooking(item, { status: 'cancelled' })} disabled={busyAction}>Отменить</button> : null}
+                    {item.status !== 'done' ? <button className="btn btnPrimary" onClick={() => patchLocalBooking(item, { status: 'done' })} disabled={busyAction}>Done</button> : null}
+                  </div>
+                </div>
+              ))}
+
+              {selectedDayRecurring.map((item) => (
+                <div key={`agenda-recurring-${item.key}`} className="adminAgendaItem recurring">
+                  <div>
+                    <div className="adminAgendaTitle">Recurring • {item.time_hm}</div>
+                    <div className="small">{item.tutor_email} → {item.student_email}</div>
+                    <div className="adminAgendaMetaRow">
+                      <StatusPill tone={statusToneFromValue(item.status)}>{item.status}</StatusPill>
+                      <StatusPill tone="default">{item.duration_minutes} мин</StatusPill>
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {selectedDaySlots.map((item) => (
+                <div key={`agenda-slot-${item.id}`} className="adminAgendaItem slot">
+                  <div>
+                    <div className="adminAgendaTitle">Open slot #{item.id} • {adminFormatTime(item.starts_at)}–{adminFormatTime(item.ends_at)}</div>
+                    <div className="small">Репетитор: {userById.get(Number(item.tutor_user_id))?.email || `user #${item.tutor_user_id}`}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card adminCalendarSideCard">
+            <div className="panelTitle">
+              <div>
+                <div className="h3">Recurring lessons</div>
+                <div className="small">Управление сериями: refresh, пауза, отмена и контроль следующего урока.</div>
+              </div>
+            </div>
+            <div className="adminSeriesList">
+              {filteredSeries.length === 0 ? <div className="small">Серий пока нет.</div> : filteredSeries.map((series) => (
+                <div key={series.id} className="adminSeriesItem">
+                  <div className="adminSeriesHeader">
+                    <div>
+                      <div className="adminAgendaTitle">Series #{series.id}</div>
+                      <div className="small">{series.tutor_email} → {series.student_email}</div>
+                    </div>
+                    <StatusPill tone={statusToneFromValue(series.status)}>{series.status}</StatusPill>
+                  </div>
+                  <div className="small">{(series.weekdays || []).map((d) => weekdays[d] || d).join(' • ')} • {series.time_hm} • {series.duration_minutes} мин</div>
+                  <div className="small">Вперёд: {series.weeks_ahead} нед. • Забронировано: {series.booked_count || 0} • Следующее: {formatDateTimeShort(series.next_booking_at)}</div>
+                  <div className="adminAgendaActions" style={{ marginTop: 10 }}>
+                    <button className="btn" onClick={() => patchSeries(series.id, { refresh_now: true }, 'Серия синхронизирована со слотами.')} disabled={busyAction}>Refresh</button>
+                    {String(series.status) !== 'paused' ? <button className="btn" onClick={() => patchSeries(series.id, { status: 'paused' }, 'Серия поставлена на паузу.')} disabled={busyAction}>Пауза</button> : <button className="btn" onClick={() => patchSeries(series.id, { status: 'active', refresh_now: true }, 'Серия снова активна.')} disabled={busyAction}>Возобновить</button>}
+                    {String(series.status) !== 'cancelled' ? <button className="btn" onClick={() => patchSeries(series.id, { status: 'cancelled' }, 'Серия отменена.')} disabled={busyAction}>Отменить</button> : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card adminCalendarSideCard">
+            <div className="panelTitle">
+              <div>
+                <div className="h3">Новая серия занятий</div>
+                <div className="small">Полноценный recurring-конструктор для админа: выбери участника, репетитора, дни недели и горизонт бронирования.</div>
+              </div>
+            </div>
+            <div className="grid" style={{ gap: 10 }}>
+              <div>
+                <div className="label">Ученик</div>
+                <select className="select" value={seriesForm.student_user_id} onChange={(e) => setSeriesForm(s => ({ ...s, student_user_id: e.target.value }))}>
+                  <option value="">Выбери ученика</option>
+                  {studentOptions.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
+                </select>
+              </div>
+              <div>
+                <div className="label">Репетитор</div>
+                <select className="select" value={seriesForm.tutor_user_id} onChange={(e) => setSeriesForm(s => ({ ...s, tutor_user_id: e.target.value }))}>
+                  <option value="">Выбери репетитора</option>
+                  {tutorOptions.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
+                </select>
+              </div>
+              <div>
+                <div className="label">Дни недели</div>
+                <div className="adminWeekdayPicker">
+                  {weekdays.map((day, idx) => {
+                    const active = (seriesForm.weekdays || []).map(Number).includes(idx)
+                    return (
+                      <button key={day} type="button" className={`btn ${active ? 'btnPrimary' : ''}`} onClick={() => toggleWeekday(idx)}>
+                        {day}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="adminSeriesFormGrid">
+                <div>
+                  <div className="label">Время</div>
+                  <input className="input" value={seriesForm.time_hm} onChange={(e) => setSeriesForm(s => ({ ...s, time_hm: e.target.value }))} placeholder="18:00" />
+                </div>
+                <div>
+                  <div className="label">Длительность</div>
+                  <input className="input" type="number" min="20" max="180" value={seriesForm.duration_minutes} onChange={(e) => setSeriesForm(s => ({ ...s, duration_minutes: e.target.value }))} />
+                </div>
+                <div>
+                  <div className="label">Горизонт, недель</div>
+                  <input className="input" type="number" min="1" max="16" value={seriesForm.weeks_ahead} onChange={(e) => setSeriesForm(s => ({ ...s, weeks_ahead: e.target.value }))} />
+                </div>
+              </div>
+              <label className="small"><input type="checkbox" checked={Boolean(seriesForm.auto_attendance_confirm)} onChange={(e) => setSeriesForm(s => ({ ...s, auto_attendance_confirm: e.target.checked }))} /> автоподтверждение attendance для ученика</label>
+              <button className="btn btnPrimary" onClick={createSeries} disabled={busyAction}>Создать recurring series</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Admin() {
   const { me, token, loading } = useAuth()
   const nav = useNavigate()
@@ -172,6 +732,7 @@ export default function Admin() {
   const [catalogKind, setCatalogKind] = useState('subject')
   const [catalogValue, setCatalogValue] = useState('')
   const [catalogOrder, setCatalogOrder] = useState('0')
+  const [bookingsRefreshSignal, setBookingsRefreshSignal] = useState(0)
 
   const activeTab = useMemo(() => TABS.find(t => t.id === tab) || TABS[0], [tab])
   const canLoad = useMemo(() => Boolean(token && me?.role === 'admin'), [token, me])
@@ -373,6 +934,10 @@ export default function Admin() {
   }, [tab, token, canLoad])
 
   async function refreshCurrent() {
+    if (tab === 'bookings') {
+      setBookingsRefreshSignal(v => v + 1)
+      return
+    }
     await loadActive()
   }
 
@@ -647,7 +1212,7 @@ export default function Admin() {
                 </div>
               </div>
 
-              <div className="card adminInsightCard">
+              <div className="card adminInsightCard adminInsightCardWide">
                 <div className="panelTitle">
                   <div>
                     <div className="h3">Attendance / show-rate</div>
@@ -946,46 +1511,25 @@ export default function Admin() {
         )}
 
         {tab === 'bookings' && (
-          <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>Занятия</div>
-                <div className="sub">Отмена, done, перенос и быстрый переход в комнату.</div>
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <select className="select" value={bookingStatus} onChange={e => setBookingStatus(e.target.value)}>
-                  <option value="">все</option>
-                  <option value="confirmed">confirmed</option>
-                  <option value="cancelled">cancelled</option>
-                  <option value="done">done</option>
-                </select>
-                <button className="btn" onClick={loadActive}>Применить</button>
-              </div>
-            </div>
-            <div className="grid" style={{ gap: 10, marginTop: 10 }}>
-              {bookings.length === 0 ? <div className="small">Нет занятий.</div> : bookings.map(b => (
-                <div key={b.id} className="card adminDataCard">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                    <div>
-                      <div style={{ fontWeight: 800 }}>#{b.id} • {b.status}</div>
-                      <div className="small">Tutor: {b.tutor_email} • Student: {b.student_email}</div>
-                      <div className="small">Time: {b.starts_at ? new Date(b.starts_at).toLocaleString() : '—'} {b.ends_at ? `— ${new Date(b.ends_at).toLocaleString()}` : ''}</div>
-                      <div className="small">slot_id: {b.slot_id}</div>
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <button className="btn" onClick={() => nav(`/room/booking-${b.id}`)}>Комната</button>
-                      <button className="btn" onClick={() => patchBooking(b, { status: 'cancelled' })}>Отменить</button>
-                      <button className="btn btnPrimary" onClick={() => patchBooking(b, { status: 'done' })}>Done</button>
-                      <button className="btn" onClick={() => {
-                        const sid = prompt('Новый slot_id')
-                        if (!sid) return
-                        patchBooking(b, { slot_id: Number(sid) })
-                      }}>Перенести</button>
-                    </div>
-                  </div>
+          <div className="grid" style={{ gap: 12 }}>
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 900, fontSize: 18 }}>Фильтры календаря</div>
+                  <div className="sub">Оставь общий статус, а ниже используй полноценный календарный обзор, recurring-серии и agenda по дням.</div>
                 </div>
-              ))}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <select className="select" value={bookingStatus} onChange={e => setBookingStatus(e.target.value)}>
+                    <option value="">все</option>
+                    <option value="confirmed">confirmed</option>
+                    <option value="cancelled">cancelled</option>
+                    <option value="done">done</option>
+                  </select>
+                  <button className="btn" onClick={() => setBookingsRefreshSignal(v => v + 1)}>Применить</button>
+                </div>
+              </div>
             </div>
+            <BookingsCalendarPanel token={token} nav={nav} q={q} bookingStatus={bookingStatus} refreshSignal={bookingsRefreshSignal} />
           </div>
         )}
 

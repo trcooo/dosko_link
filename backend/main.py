@@ -3213,6 +3213,11 @@ class AdminBookingOut(BaseModel):
     tutor_email: str
     student_user_id: int
     student_email: str
+    price: int = 0
+    payment_status: str = 'unpaid'
+    tutor_attendance_status: str = 'pending'
+    student_attendance_status: str = 'pending'
+    recurring_series_id: Optional[int] = None
 
 
 class AdminBookingPatchIn(BaseModel):
@@ -3224,6 +3229,7 @@ def _booking_to_admin_out(b: Booking, session: Session) -> AdminBookingOut:
     slot = session.get(Slot, b.slot_id)
     tutor = session.get(User, b.tutor_user_id)
     student = session.get(User, b.student_user_id)
+    meta = session.exec(select(BookingMeta).where(BookingMeta.booking_id == b.id).limit(1)).first()
     return AdminBookingOut(
         id=b.id,
         status=b.status,
@@ -3235,6 +3241,11 @@ def _booking_to_admin_out(b: Booking, session: Session) -> AdminBookingOut:
         tutor_email=getattr(tutor, 'email', '') if tutor else '',
         student_user_id=b.student_user_id,
         student_email=getattr(student, 'email', '') if student else '',
+        price=int(getattr(b, 'price', 0) or 0),
+        payment_status=str(getattr(b, 'payment_status', 'unpaid') or 'unpaid'),
+        tutor_attendance_status=str(getattr(b, 'tutor_attendance_status', 'pending') or 'pending'),
+        student_attendance_status=str(getattr(b, 'student_attendance_status', 'pending') or 'pending'),
+        recurring_series_id=int(getattr(meta, 'recurring_series_id', 0) or 0) or None,
     )
 
 
@@ -3242,29 +3253,47 @@ def _booking_to_admin_out(b: Booking, session: Session) -> AdminBookingOut:
 def admin_list_bookings(
     q: Optional[str] = None,
     status: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
     limit: int = 100,
     _: User = Depends(require_role('admin')),
     session: Session = Depends(get_session),
 ):
     limit = max(1, min(int(limit or 100), 500))
 
-    stmt = select(Booking).order_by(Booking.created_at.desc())
+    stmt = select(Booking)
     if status:
         stmt = stmt.where(Booking.status == status)
 
-    bookings = session.exec(stmt.limit(limit)).all()
+    if date_from or date_to:
+        slot_stmt = select(Slot.id)
+        if date_from:
+            slot_stmt = slot_stmt.where(Slot.ends_at >= date_from)
+        if date_to:
+            slot_stmt = slot_stmt.where(Slot.starts_at <= date_to)
+        slot_ids = [int(x) for x in session.exec(slot_stmt).all()]
+        if not slot_ids:
+            return []
+        stmt = stmt.where(Booking.slot_id.in_(slot_ids))
+
+    bookings = session.exec(stmt.order_by(Booking.created_at.desc()).limit(limit)).all()
 
     if q:
         qq = q.strip().lower()
-        # Filter in python by matching either tutor or student email
         out = []
         for b in bookings:
             tutor = session.get(User, b.tutor_user_id)
             student = session.get(User, b.student_user_id)
-            if (tutor and qq in tutor.email.lower()) or (student and qq in student.email.lower()):
+            hay = ' '.join([
+                getattr(tutor, 'email', '') if tutor else '',
+                getattr(student, 'email', '') if student else '',
+                str(getattr(b, 'id', '')),
+            ]).lower()
+            if qq in hay:
                 out.append(b)
         bookings = out
 
+    bookings = sorted(bookings, key=lambda b: (_slot_for_booking(b, session).starts_at if _slot_for_booking(b, session) else b.created_at), reverse=False)
     return [_booking_to_admin_out(b, session) for b in bookings]
 
 
@@ -8113,11 +8142,22 @@ def delete_last_minute_alert(sub_id: int, user: User = Depends(require_role('stu
 
 class RecurringBookingIn(BaseModel):
     tutor_user_id: int
+    student_user_id: Optional[int] = None
     weekdays: List[int] = Field(default_factory=list)
     time_hm: str = '18:00'
     duration_minutes: int = 60
     weeks_ahead: int = 4
     auto_attendance_confirm: bool = False
+
+
+class RecurringBookingPatchIn(BaseModel):
+    status: Optional[str] = None  # active | paused | cancelled
+    weekdays: Optional[List[int]] = None
+    time_hm: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    weeks_ahead: Optional[int] = None
+    auto_attendance_confirm: Optional[bool] = None
+    refresh_now: bool = False
 
 
 def _slot_matches_recurring(slot: Slot, tutor_user_id: int, weekdays: List[int], hh: int, mm: int, duration_min: int, now: datetime, until: datetime) -> bool:
@@ -8141,6 +8181,43 @@ def _slot_matches_recurring(slot: Slot, tutor_user_id: int, weekdays: List[int],
     return True
 
 
+def _recurring_series_to_out(r: RecurringBookingSeries, session: Session) -> Dict[str, Any]:
+    tutor = session.get(User, r.tutor_user_id)
+    student = session.get(User, r.student_user_id)
+    item_rows = session.exec(select(RecurringBookingSeriesItem).where(RecurringBookingSeriesItem.series_id == r.id)).all()
+    next_booking_at = None
+    upcoming_count = 0
+    now = _as_utc(_utcnow()) or _utcnow()
+    for it in item_rows:
+        booking = session.get(Booking, int(it.booking_id))
+        if not booking:
+            continue
+        slot = _slot_for_booking(booking, session)
+        starts_at = _as_utc(getattr(slot, 'starts_at', None)) if slot else None
+        if starts_at and starts_at >= now:
+            upcoming_count += 1
+            if next_booking_at is None or starts_at < next_booking_at:
+                next_booking_at = starts_at
+    return {
+        "id": r.id,
+        "tutor_user_id": r.tutor_user_id,
+        "student_user_id": r.student_user_id,
+        "tutor_email": getattr(tutor, 'email', '') if tutor else '',
+        "student_email": getattr(student, 'email', '') if student else '',
+        "weekdays": _loads_list(getattr(r, 'weekdays_json', '[]')),
+        "time_hm": r.time_hm,
+        "duration_minutes": r.duration_minutes,
+        "weeks_ahead": r.weeks_ahead,
+        "auto_attendance_confirm": r.auto_attendance_confirm,
+        "status": r.status,
+        "booked_count": len(item_rows),
+        "upcoming_count": upcoming_count,
+        "next_booking_at": next_booking_at,
+        "updated_at": r.updated_at,
+        "created_at": r.created_at,
+    }
+
+
 @app.get('/api/recurring/bookings')
 def list_recurring_series(user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     q = select(RecurringBookingSeries)
@@ -8149,23 +8226,7 @@ def list_recurring_series(user: User = Depends(get_current_user), session: Sessi
     elif user.role == 'tutor':
         q = q.where(RecurringBookingSeries.tutor_user_id == user.id)
     rows = session.exec(q.order_by(RecurringBookingSeries.updated_at.desc())).all()
-    items = []
-    for r in rows:
-        item_rows = session.exec(select(RecurringBookingSeriesItem).where(RecurringBookingSeriesItem.series_id == r.id)).all()
-        items.append({
-            "id": r.id,
-            "tutor_user_id": r.tutor_user_id,
-            "student_user_id": r.student_user_id,
-            "weekdays": _loads_list(getattr(r, 'weekdays_json', '[]')),
-            "time_hm": r.time_hm,
-            "duration_minutes": r.duration_minutes,
-            "weeks_ahead": r.weeks_ahead,
-            "auto_attendance_confirm": r.auto_attendance_confirm,
-            "status": r.status,
-            "booked_count": len(item_rows),
-            "updated_at": r.updated_at,
-        })
-    return {"items": items}
+    return {"items": [_recurring_series_to_out(r, session) for r in rows]}
 
 
 def _book_recurring_matches(session: Session, series: RecurringBookingSeries) -> List[int]:
@@ -8208,9 +8269,16 @@ def create_recurring_booking_series(
     weekdays = [int(x) for x in (payload.weekdays or []) if int(x) in {0,1,2,3,4,5,6}]
     if not weekdays:
         raise HTTPException(400, 'weekdays required')
+    tutor = session.get(User, int(payload.tutor_user_id))
+    if not tutor or str(getattr(tutor, 'role', '')) not in {'tutor', 'admin'}:
+        raise HTTPException(404, 'tutor not found')
+    student_id = int(payload.student_user_id or 0) if user.role == 'admin' and payload.student_user_id else int(user.id)
+    student = session.get(User, student_id)
+    if not student or str(getattr(student, 'role', '')) not in {'student', 'admin'}:
+        raise HTTPException(404, 'student not found')
     series = RecurringBookingSeries(
         tutor_user_id=int(payload.tutor_user_id),
-        student_user_id=int(user.id),
+        student_user_id=student_id,
         weekdays_json=json.dumps(sorted(set(weekdays))),
         time_hm=(payload.time_hm or '18:00')[:5],
         duration_minutes=max(20, min(int(payload.duration_minutes or 60), 180)),
@@ -8223,7 +8291,7 @@ def create_recurring_booking_series(
     session.commit()
     session.refresh(series)
     booked_ids = _book_recurring_matches(session, series)
-    return {"ok": True, "series_id": series.id, "booked_booking_ids": booked_ids}
+    return {"ok": True, "series_id": series.id, "booked_booking_ids": booked_ids, "series": _recurring_series_to_out(series, session)}
 
 
 @app.post('/api/recurring/bookings/{series_id}/refresh')
@@ -8240,6 +8308,62 @@ def refresh_recurring_booking_series(series_id: int, user: User = Depends(get_cu
     session.add(series)
     session.commit()
     return {"ok": True, "booked_booking_ids": booked_ids}
+
+
+@app.patch('/api/recurring/bookings/{series_id}')
+def patch_recurring_booking_series(
+    series_id: int,
+    payload: RecurringBookingPatchIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    series = session.get(RecurringBookingSeries, series_id)
+    if not series:
+        raise HTTPException(404, 'series not found')
+    if user.role == 'student' and int(series.student_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+    if user.role == 'tutor' and int(series.tutor_user_id) != int(user.id):
+        raise HTTPException(403, 'no access')
+
+    changed = False
+    if payload.status is not None:
+        status = str(payload.status or '').strip().lower()
+        if status not in {'active', 'paused', 'cancelled'}:
+            raise HTTPException(400, 'bad status')
+        series.status = status
+        changed = True
+    if payload.weekdays is not None:
+        weekdays = sorted({int(x) for x in (payload.weekdays or []) if int(x) in {0,1,2,3,4,5,6}})
+        if not weekdays:
+            raise HTTPException(400, 'weekdays required')
+        series.weekdays_json = json.dumps(weekdays)
+        changed = True
+    if payload.time_hm is not None:
+        series.time_hm = str(payload.time_hm or '18:00')[:5]
+        changed = True
+    if payload.duration_minutes is not None:
+        series.duration_minutes = max(20, min(int(payload.duration_minutes or 60), 180))
+        changed = True
+    if payload.weeks_ahead is not None:
+        series.weeks_ahead = max(1, min(int(payload.weeks_ahead or 4), 16))
+        changed = True
+    if payload.auto_attendance_confirm is not None:
+        series.auto_attendance_confirm = bool(payload.auto_attendance_confirm)
+        changed = True
+
+    booked_ids: List[int] = []
+    if changed or payload.refresh_now:
+        series.updated_at = datetime.utcnow()
+        session.add(series)
+        session.commit()
+        session.refresh(series)
+    if str(getattr(series, 'status', 'active')) == 'active' and payload.refresh_now:
+        booked_ids = _book_recurring_matches(session, series)
+        series.updated_at = datetime.utcnow()
+        session.add(series)
+        session.commit()
+        session.refresh(series)
+    return {"ok": True, "booked_booking_ids": booked_ids, "series": _recurring_series_to_out(series, session)}
 
 
 class ExamModeIn(BaseModel):
