@@ -469,7 +469,7 @@ function BookingsCalendarPanel({ token, nav, q, bookingStatus, refreshSignal = 0
   }
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
+    <div className="grid adminCalendarRoot" style={{ gap: 16 }}>
       <div className="card adminCalendarSummaryCard">
         <div className="panelTitle">
           <div>
@@ -1147,7 +1147,7 @@ export default function Admin() {
         </div>
       </div>
 
-      <div className="grid" style={{ gap: 12 }}>
+      <div className="grid adminMainColumn" style={{ gap: 12 }}>
         <div className="card productHeroCard">
           <div className="productHeroTop">
             <div>
@@ -1233,7 +1233,7 @@ export default function Admin() {
         )}
 
         {tab === 'telegram' && (
-          <div className="grid" style={{ gap: 12 }}>
+          <div className="grid adminMainColumn" style={{ gap: 12 }}>
             <div className="telegramAssistantCard productSectionCard">
               <div className="telegramAssistantHeader">
                 <div className="telegramAssistantMeta">
@@ -1511,7 +1511,7 @@ export default function Admin() {
         )}
 
         {tab === 'bookings' && (
-          <div className="grid" style={{ gap: 12 }}>
+          <div className="grid adminMainColumn" style={{ gap: 12 }}>
             <div className="card">
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                 <div>

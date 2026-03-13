@@ -84,23 +84,32 @@ function NavBar() {
   )
 }
 
+function AppBody() {
+  const location = useLocation()
+  const isAdmin = location.pathname === '/admin'
+
+  return (
+    <div className={`container pageShell${isAdmin ? ' pageShellAdmin' : ''}`}>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/tutor/:id" element={<TutorProfile />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/learning" element={<Learning />} />
+        <Route path="/wallet" element={<Wallet />} />
+        <Route path="/room/:roomId" element={<Room />} />
+        <Route path="/admin" element={<Admin />} />
+      </Routes>
+    </div>
+  )
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <NavBar />
-      <div className="container pageShell">
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/tutor/:id" element={<TutorProfile />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/learning" element={<Learning />} />
-          <Route path="/wallet" element={<Wallet />} />
-          <Route path="/room/:roomId" element={<Room />} />
-          <Route path="/admin" element={<Admin />} />
-        </Routes>
-      </div>
+      <AppBody />
     </AuthProvider>
   )
 }
