@@ -1846,3 +1846,280 @@ body::before{
   .adminAgendaActions .btn,
   .adminWeekdayPicker .btn{width:100%}
 }
+
+/* Responsive adaptation pack */
+img,video,canvas,svg,iframe{max-width:100%}
+input,select,textarea,button{font:inherit}
+.card,.hero,.productHeroCard,.productSectionCard,.productSidebarCard,.lessonHeroCard,.lessonPanelCard,.lessonWorkspaceCard,.telegramAssistantCard{min-width:0}
+
+.pageShell > *,
+.productPage > *,
+.grid > *,
+.split > *,
+.room > *,
+.adminShell > *,
+.adminOverviewGrid > *,
+.adminCalendarWorkspace > *,
+.searchQuickGrid > *,
+.recommendedGrid > *,
+.lessonWorkspaceGrid > *{min-width:0}
+
+.adminMenuBtn,
+.searchSortChip,
+.filterChip,
+.telegramCommandChip,
+.telegramRoleBadge,
+.telegramBotBadge,
+.lessonPanelBadge,
+.statusPill,
+.pill,
+.matchBadge,
+.tutorMetricPill{max-width:100%; word-break:break-word}
+
+.searchFiltersGrid,
+.filtersGrid,
+.telegramStatusGrid,
+.telegramDebugList,
+.adminMiniGrid,
+.adminStatsGrid,
+.lessonHeroStats,
+.lessonChecklist,
+.lessonPresenceStats,
+.lessonPresenceGrid,
+.resultsMetricsGrid,
+.recommendedGrid,
+.tutorGrid,
+.filePreviewGallery,
+.homeworkAttachmentGallery{
+  width:100%;
+  min-width:0;
+}
+
+@media (max-width: 1280px){
+  .pageShellAdmin{max-width:none; width:100%;}
+  .adminShell{grid-template-columns:280px minmax(0,1fr); gap:18px}
+  .adminCalendarWorkspace{grid-template-columns:minmax(0,1.7fr) minmax(340px,.9fr)}
+  .adminCalendarMonthGrid{grid-template-columns:repeat(7,minmax(96px,1fr)); gap:10px}
+  .adminCalendarCell{min-height:146px; padding:12px}
+}
+
+@media (max-width: 1120px){
+  .container{width:100%;}
+  .productHeroTop,
+  .telegramAssistantHeader,
+  .lessonHeroTop,
+  .adminCalendarToolbarWide,
+  .adminListRow,
+  .telegramEventMeta{
+    flex-direction:column;
+    align-items:flex-start;
+  }
+  .productActionBar,
+  .adminActionBarWrap,
+  .lessonHeroActions,
+  .lessonInlineActionBar,
+  .adminQuickLinks,
+  .lessonWorkspaceActions{
+    width:100%;
+    justify-content:flex-start;
+  }
+  .adminSearchInput{min-width:0; width:100%}
+  .adminShell{grid-template-columns:1fr}
+  .adminSidebar{
+    position:static;
+    min-height:auto;
+    gap:14px;
+  }
+  .adminMenu{
+    grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+    gap:10px;
+  }
+  .adminSidebarFooter{
+    margin-top:0;
+    grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+    align-items:start;
+  }
+  .adminOverviewGrid,
+  .searchQuickGrid,
+  .lessonWorkspaceGrid,
+  .adminCalendarWorkspace,
+  .lessonRoomGrid{grid-template-columns:1fr}
+  .telegramStatusGrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .adminMiniGrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+
+@media (max-width: 920px){
+  :root{--radius:20px}
+  .container{padding:16px 14px 28px}
+  .pageShellAdmin{padding-left:14px; padding-right:14px}
+  .heroInner,.lessonHeroCard,.lessonWorkspaceCard,.telegramAssistantCard,.productHeroCard,.productSectionCard,.productSidebarCard,.card{padding:16px}
+  .productPageTitle,.telegramTitle{font-size:clamp(22px,4vw,28px)}
+  .heroTitle,.h1{font-size:clamp(28px,5vw,38px)}
+  .heroSub,.sub{font-size:14px}
+  .adminStatsGrid,
+  .lessonHeroStats,
+  .adminMiniGrid,
+  .telegramStatusGrid,
+  .resultsMetricsGrid,
+  .recommendedGrid,
+  .tutorGrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .searchStepsGrid,
+  .roleHeroGrid,
+  .checkGrid,
+  .lessonChecklist,
+  .lessonPresenceStats,
+  .lessonPresenceGrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .adminCalendarSummaryCard{padding:18px}
+  .adminCalendarMainCard,.adminCalendarSideCard{padding:16px}
+  .adminCalendarToolbarActions{width:100%}
+  .adminCalendarToolbarActions .btn,
+  .adminCalendarToolbarActions .input,
+  .adminCalendarToolbarActions .select{flex:1 1 220px}
+  .adminCalendarMonthGrid{grid-template-columns:repeat(7,minmax(84px,1fr)); gap:8px}
+  .adminCalendarHeadCell{min-height:38px; font-size:11px}
+  .adminCalendarCell{min-height:132px; padding:10px; border-radius:18px}
+  .adminCalendarDateNum{font-size:15px}
+}
+
+@media (max-width: 720px){
+  body{font-size:15px}
+  .navSurface{border-radius:20px}
+  .navInner{gap:12px}
+  .navLinks.open{left:0; right:0; top:calc(100% + 8px)}
+  .navLinksInner,
+  .navProfileCard,
+  .navAuthActions,
+  .productActionBar,
+  .adminActionBarWrap,
+  .lessonHeroActions,
+  .lessonInlineActionBar,
+  .adminQuickLinks,
+  .lessonWorkspaceActions,
+  .telegramActionRow,
+  .telegramCommandRow,
+  .adminHeroStatsRow,
+  .kpiRow,
+  .heroCtas,
+  .searchSortChips,
+  .tutorTagRow,
+  .tutorReasonRow,
+  .lessonDiagnosticsRow,
+  .lessonControlsRow,
+  .lessonVideoHelperRow,
+  .adminCalendarLegendRow,
+  .adminAgendaActions{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:8px;
+  }
+  .navLinksInner .btn,
+  .navProfileCard .btn,
+  .navAuthActions .btn,
+  .productActionBar .btn,
+  .adminActionBarWrap .btn,
+  .lessonHeroActions .btn,
+  .lessonInlineActionBar .btn,
+  .adminQuickLinks .btn,
+  .lessonWorkspaceActions .btn,
+  .telegramActionRow .btn,
+  .searchSortChips .btn,
+  .adminHeroStatsRow > *,
+  .kpiRow > *,
+  .heroCtas .btn,
+  .tutorCTACol .btn,
+  .lessonDiagnosticsRow > *,
+  .lessonControlsRow > *,
+  .lessonVideoHelperRow > *,
+  .adminAgendaActions .btn,
+  .adminCalendarLegendRow > *{width:100%}
+  .searchStepsGrid,
+  .searchQuickGrid,
+  .filtersGrid,
+  .searchFiltersGrid,
+  .adminStatsGrid,
+  .adminMiniGrid,
+  .telegramStatusGrid,
+  .telegramDebugList,
+  .recommendedGrid,
+  .resultsMetricsGrid,
+  .tutorGrid,
+  .roleHeroGrid,
+  .checkGrid,
+  .lessonHeroStats,
+  .lessonChecklist,
+  .lessonDeviceGrid,
+  .lessonPresenceStats,
+  .lessonPresenceGrid,
+  .filePreviewGallery,
+  .homeworkAttachmentGallery,
+  .adminMenu{grid-template-columns:1fr}
+  .tutorVisualTop,
+  .tutorIdentityWrap,
+  .telegramAssistantMeta,
+  .lessonWorkspaceHeaderRight,
+  .lessonAgendaItem{
+    flex-direction:column;
+    align-items:flex-start;
+  }
+  .tutorCTACol,
+  .lessonWorkspaceHeaderRight{justify-items:stretch; width:100%}
+  .tutorVisualAvatar{width:64px; height:64px; border-radius:18px}
+  .profilePhoto{width:84px; height:84px}
+  .row{flex-direction:column}
+  .row > *,
+  .split > *,
+  .grid2 > *,
+  .mockRoom > *,
+  .room > *{width:100%}
+  .lessonWorkspaceGrid,
+  .adminCalendarWorkspace,
+  .adminOverviewGrid{gap:12px}
+  .adminCalendarToolbarWide{margin-bottom:12px}
+  .adminCalendarToolbarActions{display:grid; grid-template-columns:1fr}
+  .adminCalendarToolbarActions .btn,
+  .adminCalendarToolbarActions .input,
+  .adminCalendarToolbarActions .select{width:100%; flex:none}
+  .calendarScroll,
+  .lessonCalendarGrid,
+  .adminCalendarMonthGrid{overflow-x:auto}
+  .lessonCalendarGrid{min-width:560px}
+  .adminCalendarMonthGrid{min-width:700px}
+  .adminCalendarCell{min-height:124px}
+  .adminCalendarSummaryCard,.adminCalendarMainCard,.adminCalendarSideCard{border-radius:20px}
+  .modalCard,.lessonSummaryModal{width:100%; max-width:100%; border-radius:18px}
+}
+
+@media (max-width: 560px){
+  .container.pageShell{padding-top:14px; padding-bottom:22px}
+  .container,.pageShellAdmin{padding-left:12px; padding-right:12px}
+  .nav{padding:8px 8px 0}
+  .navSurface{border-radius:18px}
+  .navInner{padding:12px}
+  .brand{gap:10px}
+  .brandLogo{width:116px}
+  .heroInner,.lessonHeroCard,.lessonWorkspaceCard,.telegramAssistantCard,.productHeroCard,.productSectionCard,.productSidebarCard,.card{padding:14px}
+  .heroTitle,.h1{font-size:24px}
+  .productPageTitle,.telegramTitle,.h2{font-size:20px}
+  .h3{font-size:16px}
+  .small,.footerNote{font-size:12px}
+  .btn{min-height:40px; padding:10px 12px}
+  .badge,.avatar,.tutorVisualAvatar{border-radius:16px}
+  .adminSidebarFooter{grid-template-columns:1fr}
+  .adminCalendarStatsRow{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .adminCalendarMonthGrid{min-width:630px; gap:7px}
+  .adminCalendarCell{min-height:116px; padding:9px; border-radius:16px}
+  .adminCalendarDateNum{font-size:14px}
+  .lessonCalendarGrid{min-width:520px}
+  .canvasWrap{--board-height:380px}
+  .canvasArea,.canvas,.responsiveCanvas{height:var(--board-height)}
+}
+
+@media (max-width: 400px){
+  .brandLogo{width:104px}
+  .heroTitle,.h1{font-size:22px}
+  .productPageTitle,.telegramTitle,.h2{font-size:18px}
+  .adminCalendarMonthGrid{min-width:580px}
+  .lessonCalendarGrid{min-width:480px}
+  .adminCalendarCell{min-height:108px}
+  .kpi,.roleStat,.adminStat,.lessonStatCard{min-height:auto}
+}
